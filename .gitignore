@@ -1,0 +1,3 @@
+# Godot import cache + local test artifacts
+godot/.godot/
+godot/test_out/

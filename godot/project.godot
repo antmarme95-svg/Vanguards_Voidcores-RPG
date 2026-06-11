@@ -1,0 +1,23 @@
+; Engine configuration file.
+; BORISAWA - Godot 4 port of the Aetherpunk High-Fantasy vertical slice.
+config_version=5
+
+[application]
+
+config/name="BORISAWA"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+
+[autoload]
+
+EventBus="*res://autoload/event_bus.gd"
+Debug="*res://autoload/debug.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
