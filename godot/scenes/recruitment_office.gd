@@ -69,12 +69,33 @@ func _build_environment(theme: Dictionary) -> void:
 	env.background_color = fog_col
 	env.fog_enabled = true
 	env.fog_light_color = fog_col
-	env.fog_density = 0.08
+	env.fog_density = 0.02  # was 0.08 — much less interior fog so walls don't wash white
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 1.0
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(theme.get("ambient", "#bfe8ff"))
-	env.ambient_light_energy = 0.18
+	env.ambient_light_energy = 0.10  # was 0.18 — reduce so floor doesn't wash white
+	# ---- Glow/Bloom — enabled for the forge theme (molten channel is dramatic),
+	# disabled for skyland/docks where large floating emissives create room-flooding bleed.
+	var prop_set_for_glow: String = theme.get("propSet", "skyland")
+	if prop_set_for_glow == "forge":
+		env.glow_enabled = true
+		env.glow_normalized = false
+		env.glow_intensity = 0.18
+		env.glow_bloom = 0.12
+		env.glow_hdr_threshold = 1.5
+		env.glow_hdr_luminance_cap = 3.0
+		env.glow_hdr_scale = 2.0
+		env.glow_strength = 0.8
+		env.set_glow_level(0, 0.7)
+		env.set_glow_level(1, 0.4)
+		env.set_glow_level(2, 0.0)
+		env.set_glow_level(3, 0.0)
+		env.set_glow_level(4, 0.0)
+		env.set_glow_level(5, 0.0)
+		env.set_glow_level(6, 0.0)
+	else:
+		env.glow_enabled = false  # skyland/docks: floating emissives are too large — no bloom
 	we.environment = env
 	add_child(we)
 

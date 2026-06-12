@@ -9,12 +9,18 @@ const CORE_POS_B = Vector2(-46.0, 18.0) # x, z
 const SPAWN = Vector2(0.0, 88.0)        # x, z
 
 const GRASS_PATCHES = [
-	{"x": 0.0,   "z": 64.0,  "r": 13.0},
-	{"x": -15.0, "z": 36.0,  "r": 15.0},
-	{"x": 12.0,  "z": 12.0,  "r": 16.0},
-	{"x": -8.0,  "z": -14.0, "r": 14.0},
-	{"x": 24.0,  "z": -32.0, "r": 12.0},
-	{"x": -18.0, "z": -50.0, "r": 13.0},
+	{"x": 0.0,   "z": 64.0,  "r": 22.0},
+	{"x": -15.0, "z": 36.0,  "r": 24.0},
+	{"x": 12.0,  "z": 12.0,  "r": 26.0},
+	{"x": -8.0,  "z": -14.0, "r": 22.0},
+	{"x": 24.0,  "z": -32.0, "r": 20.0},
+	{"x": -18.0, "z": -50.0, "r": 21.0},
+	{"x": 30.0,  "z": 55.0,  "r": 18.0},
+	{"x": -35.0, "z": 25.0,  "r": 19.0},
+	{"x": 5.0,   "z": -55.0, "r": 17.0},
+	{"x": 45.0,  "z": -10.0, "r": 16.0},
+	{"x": -20.0, "z": 70.0,  "r": 18.0},
+	{"x": 20.0,  "z": 80.0,  "r": 15.0},
 ]
 
 # ---- gameplay data ----
@@ -104,11 +110,12 @@ func _build_environment() -> void:
 	# Sky background color matching fog
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color("#bfe3d4")
-	# Depth fog — matches JS Fog(0xbfe3d4, 60, 230)
+	# Depth fog — begins at 55m, blue-green horizon tint for aerial perspective
 	env.fog_enabled = true
 	env.fog_light_color = Color("#bfe3d4")
 	env.fog_density = 0.0015  # tuned so full at ~230
-	env.fog_aerial_perspective = 0.3
+	env.fog_aerial_perspective = 0.45
+	env.fog_sky_affect = 0.4
 	# Tonemap — exposure 1.0 avoids ACES boost blowing out pastels
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 1.0
@@ -116,6 +123,23 @@ func _build_environment() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color("#a8d8c0")
 	env.ambient_light_energy = 0.30
+	# ---- Glow/Bloom — halos only on emissive aether tech, not white walls ----
+	env.glow_enabled = true
+	env.glow_normalized = false
+	env.glow_intensity = 0.22
+	env.glow_bloom = 0.18
+	env.glow_hdr_threshold = 1.1   # only emissives (>1.0 effective) trigger bloom
+	env.glow_hdr_luminance_cap = 2.5
+	env.glow_hdr_scale = 2.0
+	env.glow_strength = 1.0
+	# Enable levels 1-3 (tight halo), disable 4-7 (wide bleed)
+	env.set_glow_level(0, 0.6)
+	env.set_glow_level(1, 0.5)
+	env.set_glow_level(2, 0.3)
+	env.set_glow_level(3, 0.0)
+	env.set_glow_level(4, 0.0)
+	env.set_glow_level(5, 0.0)
+	env.set_glow_level(6, 0.0)
 	we.environment = env
 	add_child(we)
 
@@ -128,12 +152,20 @@ func _build_lights() -> void:
 	hemi_fill.shadow_enabled = false
 	add_child(hemi_fill)
 
-	# Sun — warm, not too strong; ACES will handle contrast
+	# Sun — warm, PCF soft shadows to ground characters and trees
 	var sun = DirectionalLight3D.new()
 	sun.light_color = Color("#fff2d8")
 	sun.light_energy = 1.1
 	sun.rotation_degrees = Vector3(-66.0, -53.0, 0.0)
 	sun.shadow_enabled = true
+	# PCF soft shadows
+	sun.shadow_blur = 1.8
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	sun.directional_shadow_max_distance = 120.0
+	sun.directional_shadow_split_1 = 0.25
+	# Tune bias to avoid acne and peter-panning
+	sun.shadow_bias = 0.06
+	sun.shadow_normal_bias = 1.5
 	add_child(sun)
 
 # ================================================================
@@ -142,9 +174,10 @@ func _build_terrain() -> void:
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 
-	var c_grass = Color("#56b04a")
-	var c_lush = Color("#3f9e4f")
-	var c_dry = Color("#8fae4e")
+	# Richer, more saturated greens — deeper BotW meadow palette
+	var c_grass = Color("#3aaa30")
+	var c_lush = Color("#267a38")
+	var c_dry = Color("#7aa83a")
 	var c_scorch = Color("#4a3434")
 
 	# Build vertex grid (SIZE x SIZE, seg x seg segments)
@@ -228,7 +261,7 @@ func _build_terrain() -> void:
 	# use_vertex_color tells the shader to multiply by COLOR attribute.
 	var mat = ToonMaterials.toon_mat(Color(1.0, 1.0, 1.0, 1.0))
 	mat.set_shader_parameter("use_vertex_color", true)
-	mat.set_shader_parameter("ambient_lift", 0.14)
+	mat.set_shader_parameter("ambient_lift", 0.06)  # reduced so saturated greens read through
 
 	var mi = MeshInstance3D.new()
 	mi.mesh = mesh
@@ -237,16 +270,17 @@ func _build_terrain() -> void:
 
 # ================================================================
 func _build_grass() -> void:
-	var state = [1337]  # seed 1337
-	var COUNT = 2400
+	var state = [1337]  # seed 1337 — mulberry32 determinism preserved
+	# ~20000 blades: 14000 in dense patches + 6000 background scatter
+	var COUNT = 20000
 
-	# Build a simple quad blade mesh
+	# Build a simple quad blade mesh (double-sided)
+	# Short wide blades = soft carpet from above, less spiky at eye level
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	# Two quads crossed (for billboarding feel without shader)
-	# Single vertical quad: 0.1 wide, 0.62 tall, origin at bottom
-	var hw = 0.05
-	var h = 0.62
+	var hw = 0.07
+	var h = 0.28
+	# Front face
 	st.set_uv(Vector2(0, 1)); st.set_normal(Vector3.BACK); st.add_vertex(Vector3(-hw, 0, 0))
 	st.set_uv(Vector2(1, 1)); st.set_normal(Vector3.BACK); st.add_vertex(Vector3( hw, 0, 0))
 	st.set_uv(Vector2(1, 0)); st.set_normal(Vector3.BACK); st.add_vertex(Vector3( hw, h, 0))
@@ -262,26 +296,33 @@ func _build_grass() -> void:
 	st.set_uv(Vector2(0, 0)); st.set_normal(Vector3.FORWARD); st.add_vertex(Vector3( hw, h, 0))
 	var blade_mesh = st.commit()
 
-	# Wind-sway shader material
-	# COLOR carries the per-instance tint set via MultiMesh.set_instance_color().
-	# Multiply albedo_color by COLOR so each blade uses its individual green shade.
+	# Wind-sway shader — COLOR.rgb = per-instance base tint (terrain-matched)
+	# High ambient_lift so blades read bright green even in shadow ramp=0 band.
+	# tip_brighten warms the blade tips (BotW style lighter/yellower tips).
+	# unshaded_floor keeps minimum brightness so blades never go black.
 	var grass_shader_code = """
 shader_type spatial;
 render_mode cull_disabled, ambient_light_disabled;
 
-uniform vec4 albedo_color : source_color = vec4(0.31, 0.68, 0.28, 1.0);
+uniform vec4 albedo_color : source_color = vec4(0.33, 0.78, 0.26, 1.0);
 uniform float wind_time : hint_range(0.0, 1000.0) = 0.0;
-uniform float ambient_lift : hint_range(0.0, 1.0) = 0.14;
+uniform float ambient_lift : hint_range(0.0, 1.0) = 0.55;
+uniform float tip_brighten : hint_range(0.0, 1.0) = 0.28;
 
 void vertex() {
-	float wave = sin(wind_time * 2.4 + VERTEX.x * 0.7 + VERTEX.z * 0.5) * 0.16 * VERTEX.y;
+	float wave = sin(wind_time * 2.4 + VERTEX.x * 0.7 + VERTEX.z * 0.5) * 0.12 * VERTEX.y;
 	VERTEX.x += wave;
 }
 
 void fragment() {
-	// COLOR holds the per-instance tint from MultiMesh.set_instance_color()
-	vec3 tinted = albedo_color.rgb * COLOR.rgb;
+	// UV.y = 1 at base, 0 at tip (standard Godot quad UVs)
+	float tip_t = 1.0 - UV.y;
+	vec3 base_tint = albedo_color.rgb * COLOR.rgb;
+	// Tip: slightly brighter + warmer (adds yellow-green)
+	vec3 tip_color = base_tint * (1.0 + tip_brighten) + vec3(tip_brighten * 0.08, tip_brighten * 0.04, -tip_brighten * 0.02);
+	vec3 tinted = mix(base_tint, tip_color, tip_t * tip_t);
 	ALBEDO = tinted;
+	// High emission floor = blades never go fully dark regardless of shadow ramp
 	EMISSION = tinted * ambient_lift;
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
@@ -291,9 +332,9 @@ void light() {
 	float NdotL = clamp(dot(NORMAL, LIGHT), 0.0, 1.0) * ATTENUATION;
 	float ramp;
 	if (NdotL < 0.20) { ramp = 0.0; }
-	else if (NdotL < 0.50) { ramp = 0.38; }
-	else if (NdotL < 0.78) { ramp = 0.62; }
-	else { ramp = 1.0; }
+	else if (NdotL < 0.50) { ramp = 0.25; }
+	else if (NdotL < 0.78) { ramp = 0.50; }
+	else { ramp = 0.75; }
 	DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ramp;
 }
 """
@@ -301,8 +342,9 @@ void light() {
 	grass_shader.code = grass_shader_code
 	_wind_mat = ShaderMaterial.new()
 	_wind_mat.shader = grass_shader
-	_wind_mat.set_shader_parameter("albedo_color", Color("#4fae47"))
+	_wind_mat.set_shader_parameter("albedo_color", Color("#4ec844"))
 	_wind_mat.set_shader_parameter("wind_time", 0.0)
+	_wind_mat.set_shader_parameter("tip_brighten", 0.28)
 
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -311,27 +353,82 @@ void light() {
 	mm.instance_count = COUNT
 	mm.mesh = blade_mesh
 
-	var greens = [Color("#4fae47"), Color("#63c24f"), Color("#3f9e4f"), Color("#7fc46a")]
+	# Bright meadow greens — need to be light enough that base_tint*COLOR stays visible
+	# (the shader multiplies albedo_color * COLOR; both must be bright enough)
+	var greens = [
+		Color("#5ec84e"),  # bright grass
+		Color("#42b048"),  # mid lush
+		Color("#6cd458"),  # lighter meadow
+		Color("#4ac050"),  # balanced lush
+		Color("#72de60"),  # very bright tip match
+		Color("#38a040"),  # deeper lush
+	]
 	var patches_count = GRASS_PATCHES.size()
+	# Split: first 14000 blades go in dense patches; last 6000 scatter across the roam ring
+	var PATCH_COUNT = 14000
+	var SCATTER_COUNT = COUNT - PATCH_COUNT
+	var ROAM_R = 95.0  # slightly inside the 102m hard boundary
 
 	for i in range(COUNT):
-		var patch_idx = int(_mulberry32_next(state) * float(patches_count)) % patches_count
-		var patch: Dictionary = GRASS_PATCHES[patch_idx]
-		var a = _mulberry32_next(state) * TAU
-		var d = sqrt(_mulberry32_next(state)) * patch["r"]
-		var gx = patch["x"] + cos(a) * d
-		var gz = patch["z"] + sin(a) * d
-		var gy = terrain_height(gx, gz)
-		var s = 0.75 + _mulberry32_next(state) * 0.7
-		var ry = _mulberry32_next(state) * TAU
-		var col_idx = int(_mulberry32_next(state) * float(greens.size())) % greens.size()
+		var gx: float
+		var gz: float
+		var s: float
+		var ry: float
+		var col_idx: int
 
+		if i < PATCH_COUNT:
+			# Dense patch placement
+			var patch_idx = int(_mulberry32_next(state) * float(patches_count)) % patches_count
+			var patch: Dictionary = GRASS_PATCHES[patch_idx]
+			var a = _mulberry32_next(state) * TAU
+			# sqrt gives uniform-disk distribution; density falls off with distance from center
+			var d = sqrt(_mulberry32_next(state)) * patch["r"]
+			gx = patch["x"] + cos(a) * d
+			gz = patch["z"] + sin(a) * d
+			s = 0.75 + _mulberry32_next(state) * 0.6
+			ry = _mulberry32_next(state) * TAU
+			col_idx = int(_mulberry32_next(state) * float(greens.size())) % greens.size()
+		else:
+			# Background scatter — uniform across the full roam ring
+			# Reject-sample: only keep if outside scorch rings (cores clear)
+			var a = _mulberry32_next(state) * TAU
+			var d = _mulberry32_next(state) * ROAM_R
+			gx = cos(a) * d
+			gz = sin(a) * d
+			# Skip near core sites (scorch radius ~13m)
+			var dc_a = sqrt((gx - CORE_POS.x) * (gx - CORE_POS.x) + (gz - CORE_POS.y) * (gz - CORE_POS.y))
+			var dc_b = sqrt((gx - CORE_POS_B.x) * (gx - CORE_POS_B.x) + (gz - CORE_POS_B.y) * (gz - CORE_POS_B.y))
+			if dc_a < 14.0 or dc_b < 14.0:
+				# Advance state but skip (place blade at a safe fallback position)
+				gx = _mulberry32_next(state) * 6.0
+				gz = _mulberry32_next(state) * 6.0 + 80.0
+			else:
+				_mulberry32_next(state)  # consume the same number of state steps
+				_mulberry32_next(state)
+			s = 0.55 + _mulberry32_next(state) * 0.5  # slightly smaller for background
+			ry = _mulberry32_next(state) * TAU
+			col_idx = int(_mulberry32_next(state) * float(greens.size())) % greens.size()
+
+		var gy = terrain_height(gx, gz)
 		var xf = Transform3D()
 		xf = xf.scaled(Vector3(s, s, s))
 		xf = xf.rotated(Vector3.UP, ry)
 		xf.origin = Vector3(gx, gy, gz)
 		mm.set_instance_transform(i, xf)
-		mm.set_instance_color(i, greens[col_idx])
+
+		# Terrain-tinted color: sample the same noise used for vertex colors
+		var n_sample = (sin(gx * 0.5) * cos(gz * 0.45) + 1.0) * 0.5
+		var terrain_col: Color
+		if n_sample > 0.6:
+			terrain_col = greens[1].lerp(greens[2], abs(n_sample - 0.5) * 1.6)
+		else:
+			terrain_col = greens[1].lerp(greens[0], abs(n_sample - 0.5) * 1.6)
+		var base_green: Color = greens[col_idx]
+		var final_col = base_green.lerp(terrain_col, 0.40)
+		# Background scatter blades are slightly lighter to avoid dark blotches at low density
+		if i >= PATCH_COUNT:
+			final_col = final_col.lightened(0.12)
+		mm.set_instance_color(i, final_col)
 
 	var mmi = MultiMeshInstance3D.new()
 	mmi.multimesh = mm
@@ -580,10 +677,87 @@ func _build_ruins_zones() -> void:
 
 
 # ================================================================
+# ================================================================
+# Distant silhouette ridge ring — big low-poly hill mesh, flat-shaded.
+# Spawns as a ring of triangular hill shapes at the given distance.
+# No outlines; color = desaturated blue-green per layer.
+# ================================================================
+func _build_ridge_ring(dist: float, hill_h: float, segments: int, col: Color) -> Node3D:
+	var g = Node3D.new()
+	var mat = StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = col
+	# fog_enabled not available on StandardMaterial3D in Godot 4 — ridges affected by fog naturally
+
+	var st = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	# Each segment is a triangle: two base points on the ring + apex above
+	var seg_angle = TAU / float(segments)
+	var seed_r = [42]  # deterministic height variation
+
+	for i in range(segments):
+		var a0 = float(i) * seg_angle
+		var a1 = float(i + 1) * seg_angle
+		var mid_a = (a0 + a1) * 0.5
+
+		# Vary hill height slightly per segment (mulberry32)
+		var h_var = 0.7 + _mulberry32_next(seed_r) * 0.65
+		var local_h = hill_h * h_var
+
+		# Width variation: slightly overlap segments for no gaps
+		var w_inner = dist * 0.95
+		var w_outer = dist * 1.18
+
+		var p0 = Vector3(cos(a0) * w_inner, 0.0, sin(a0) * w_inner)
+		var p1 = Vector3(cos(a1) * w_inner, 0.0, sin(a1) * w_inner)
+		var apex = Vector3(cos(mid_a) * w_outer, local_h, sin(mid_a) * w_outer)
+		# Also base corners slightly out for a wider hill base
+		var pb0 = Vector3(cos(a0) * dist, 0.0, sin(a0) * dist)
+		var pb1 = Vector3(cos(a1) * dist, 0.0, sin(a1) * dist)
+
+		# Front-face normal (flat-shaded appearance — no st.generate_normals needed)
+		var n = (p1 - p0).cross(apex - p0).normalized()
+		st.set_normal(n); st.set_uv(Vector2(0, 1)); st.add_vertex(p0)
+		st.set_normal(n); st.set_uv(Vector2(1, 1)); st.add_vertex(p1)
+		st.set_normal(n); st.set_uv(Vector2(0.5, 0)); st.add_vertex(apex)
+		# Base quad (ground-level fill so no gaps at bottom)
+		var n2 = Vector3.UP
+		st.set_normal(n2); st.set_uv(Vector2(0, 0)); st.add_vertex(p0)
+		st.set_normal(n2); st.set_uv(Vector2(1, 0)); st.add_vertex(pb0)
+		st.set_normal(n2); st.set_uv(Vector2(1, 1)); st.add_vertex(pb1)
+		st.set_normal(n2); st.set_uv(Vector2(0, 0)); st.add_vertex(p0)
+		st.set_normal(n2); st.set_uv(Vector2(1, 1)); st.add_vertex(pb1)
+		st.set_normal(n2); st.set_uv(Vector2(0, 1)); st.add_vertex(p1)
+
+	var mesh = st.commit()
+	var mi = MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	g.add_child(mi)
+	return g
+
+# ================================================================
 func _build_sky_dressing() -> void:
 	# Sky dome
 	var dome = Props.sky_dome(Color("#3f9fe8"), Color("#bfe3d4"))
 	add_child(dome)
+
+	# ---- Distant silhouette ridges — layered aerial perspective (BotW horizon) ----
+	# 3 rings of low-poly hills beyond the 102m roam boundary.
+	# Flat-shaded, progressively lighter/more desaturated blue-greens. No outlines.
+	# Ridge colors from near to far: rich blue-green → muted haze
+	var ridge_layers = [
+		{"dist": 140.0, "h": 22.0, "segments": 14, "col": Color("#5a9e7a")},  # near ridge: rich
+		{"dist": 180.0, "h": 30.0, "segments": 12, "col": Color("#7ab8a8")},  # mid ridge
+		{"dist": 230.0, "h": 38.0, "segments": 10, "col": Color("#a8cec2")},  # far haze ridge
+	]
+	for layer in ridge_layers:
+		var ridge_node = _build_ridge_ring(
+			float(layer["dist"]), float(layer["h"]),
+			int(layer["segments"]), Color(layer["col"])
+		)
+		add_child(ridge_node)
 
 	# Cloud clusters (9 clusters, seed 42)
 	_clouds = Node3D.new()

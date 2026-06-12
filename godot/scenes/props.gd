@@ -532,7 +532,7 @@ static func sky_dome(top_color: Color, horizon_color: Color, radius: float = 400
 	mat.cull_mode = BaseMaterial3D.CULL_FRONT
 	mat.vertex_color_use_as_albedo = true
 	mat.no_depth_test = false
-	mat.fog_enabled = false
+	# Note: fog_enabled does not exist in Godot 4 StandardMaterial3D — removed
 
 	var mi = MeshInstance3D.new()
 	mi.mesh = mesh

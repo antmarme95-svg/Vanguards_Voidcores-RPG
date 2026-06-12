@@ -45,11 +45,28 @@ func _build_environment(theme: Dictionary) -> void:
 	env.fog_enabled = true
 	env.fog_light_color = fog_col
 	env.fog_density = 0.003
+	env.fog_aerial_perspective = 0.35
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 1.0
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(theme.get("ambient", "#9fb8d8"))
 	env.ambient_light_energy = 0.20
+	# ---- Glow/Bloom — halos on aether pipes, window slits, gate glow ----
+	env.glow_enabled = true
+	env.glow_normalized = false
+	env.glow_intensity = 0.20
+	env.glow_bloom = 0.15
+	env.glow_hdr_threshold = 1.1
+	env.glow_hdr_luminance_cap = 2.5
+	env.glow_hdr_scale = 2.0
+	env.glow_strength = 1.0
+	env.set_glow_level(0, 0.6)
+	env.set_glow_level(1, 0.5)
+	env.set_glow_level(2, 0.3)
+	env.set_glow_level(3, 0.0)
+	env.set_glow_level(4, 0.0)
+	env.set_glow_level(5, 0.0)
+	env.set_glow_level(6, 0.0)
 	we.environment = env
 	add_child(we)
 
@@ -59,10 +76,12 @@ func _build_environment(theme: Dictionary) -> void:
 
 # ================================================================
 func _build_street(theme: Dictionary) -> void:
-	# Street: BoxGeometry(HALF_W*2+1, 0.2, 70) at z=-26
+	# Street: slate-dark floor (#8a96a8 family) so lamps read as bright accents
+	# Override theme floor to be darker regardless of origin theme
+	var floor_col = Color("#8a96a8")
 	var street = _box_mi(
 		Vector3(HALF_W * 2.0 + 1.0, 0.2, 70.0),
-		ToonMaterials.toon_mat(Color(theme.get("floor", "#cfd8e6")))
+		ToonMaterials.toon_mat(floor_col)
 	)
 	street.position = Vector3(0.0, -0.1, -26.0)
 	add_child(street)
@@ -219,6 +238,12 @@ func _build_lights(theme: Dictionary) -> void:
 	sun.light_energy = 0.65
 	sun.rotation_degrees = Vector3(-28.0, -20.0, 0.0)  # grazing angle = floor in shadow band
 	sun.shadow_enabled = true
+	# PCF soft shadows — guards and gate cast grounding shadows
+	sun.shadow_blur = 1.5
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	sun.directional_shadow_max_distance = 80.0
+	sun.shadow_bias = 0.05
+	sun.shadow_normal_bias = 1.2
 	add_child(sun)
 
 	# Side fill — slate-blue from the side keeps walls dark, doesn't flood floor

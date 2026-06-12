@@ -2,12 +2,13 @@
 ## Run via: godot --path godot -- --autotest=res://tests/autotest_scenes.gd
 ## Renders: wilds_overview, wilds_core_a, wilds_core_b, wilds_ruins_0/1/2,
 ##          office_aetherborn/ironblooded/miststalker, city_exit.
-## Writes test_out/scenes_results.json with terrain_samples, ruins_zones, cases.
+## Writes test_out/scenes_results.json with terrain_samples, ruins_zones, cases, wilds_fps.
 extends Node
 
 var _results: Array = []
 var _cam: Camera3D = null
 var _current_scene: Node = null
+var _wilds_fps: float = 0.0
 
 func _ready() -> void:
 	_run_tests.call_deferred()
@@ -61,6 +62,7 @@ func _run_tests() -> void:
 		"terrain_samples": terrain_samples,
 		"ruins_zones": rz_export,
 		"cases": _results,
+		"wilds_fps": _wilds_fps,
 	})
 	print("[autotest_scenes] all done, quitting")
 	get_tree().quit(0)
@@ -73,6 +75,27 @@ func _run_wilds_cases() -> void:
 	# Wait for _ready to fully run
 	await get_tree().process_frame
 	await get_tree().process_frame
+
+	# ---- FPS probe: let TheWilds (heaviest scene) run ~3 real seconds, sample FPS ----
+	# Poll real time using Time.get_ticks_msec() to avoid frame-counting instability.
+	var fps_start_ms = Time.get_ticks_msec()
+	var fps_samples: Array = []
+	_place_cam(Vector3(10.0, 45.0, 75.0), Vector3(8.0, 0.0, -10.0))
+	while Time.get_ticks_msec() - fps_start_ms < 3000:
+		await get_tree().process_frame
+		fps_samples.append(Performance.get_monitor(Performance.TIME_FPS))
+	# Average the last half of samples (ignore warm-up frames)
+	var sample_count = fps_samples.size()
+	var half_start = sample_count / 2
+	var fps_sum = 0.0
+	var fps_n = 0
+	for si in range(half_start, sample_count):
+		fps_sum += fps_samples[si]
+		fps_n += 1
+	_wilds_fps = fps_sum / float(max(fps_n, 1))
+	print("[autotest_scenes] wilds_fps = ", _wilds_fps)
+	if _wilds_fps < 60.0:
+		push_warning("[autotest_scenes] FPS below target: " + str(_wilds_fps) + " < 60")
 
 	# ---- wilds_overview: high 3/4 view from spawn toward core A ----
 	# Spawn is at (0,~0.4,88); core A at (8,~0,-42). View from above-spawn southward.
