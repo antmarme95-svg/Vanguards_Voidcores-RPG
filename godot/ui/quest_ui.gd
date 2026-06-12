@@ -38,10 +38,12 @@ func _build_tracker() -> void:
 	_tracker_panel.set_anchor(SIDE_TOP,    0.0)
 	_tracker_panel.set_anchor(SIDE_RIGHT,  1.0)
 	_tracker_panel.set_anchor(SIDE_BOTTOM, 0.0)
-	_tracker_panel.set_offset(SIDE_LEFT,  -260)
+	_tracker_panel.set_offset(SIDE_LEFT,  -276)
 	_tracker_panel.set_offset(SIDE_RIGHT,  -16)
 	_tracker_panel.set_offset(SIDE_TOP,    44)
-	_tracker_panel.set_offset(SIDE_BOTTOM, 200)
+	_tracker_panel.set_offset(SIDE_BOTTOM, 0)
+	# Panel auto-sizes vertically to content; fix horizontal width explicitly
+	_tracker_panel.custom_minimum_size = Vector2(260, 0)
 	_tracker_panel.visible = false
 	var ps := StyleBoxFlat.new()
 	ps.bg_color = Color(0.02, 0.04, 0.06, 0.80)
@@ -64,6 +66,8 @@ func _build_tracker() -> void:
 	_tracker_title = Label.new()
 	_tracker_title.add_theme_font_size_override("font_size", 11)
 	_tracker_title.add_theme_color_override("font_color", _accent)
+	_tracker_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_tracker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(_tracker_title)
 
 	_tracker_objectives = VBoxContainer.new()
@@ -139,6 +143,7 @@ func render_quest(quest_tracker) -> void:
 		var obj_col: Color = COL_INK_DIM if obj.get("done", false) else COL_INK
 		obj_lbl.add_theme_color_override("font_color", obj_col)
 		obj_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		obj_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(obj_lbl)
 
 	_tracker_path.text = "⛨ " + q.get("pathLabel", "")
@@ -180,14 +185,17 @@ func show_choice(options: Array, on_pick: Callable) -> void:
 	var cards_row := HBoxContainer.new()
 	cards_row.add_theme_constant_override("separation", 16)
 	cards_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	cards_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	center_box.add_child(cards_row)
 
 	for opt in options:
 		var path_col: Color = Color(opt.get("color", "#46e6ff"))
-		var card := Button.new()
-		card.focus_mode = Control.FOCUS_NONE
-		card.custom_minimum_size = Vector2(220, 0)
-		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		# Outer PanelContainer: drives size, has the styled border/bg
+		var card_panel := PanelContainer.new()
+		card_panel.custom_minimum_size = Vector2(300, 320)
+		card_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card_panel.size_flags_vertical   = Control.SIZE_SHRINK_CENTER
 		var cs := StyleBoxFlat.new()
 		cs.bg_color = Color(path_col.r, path_col.g, path_col.b, 0.08)
 		cs.border_width_left   = 2
@@ -197,57 +205,71 @@ func show_choice(options: Array, on_pick: Callable) -> void:
 		cs.border_color = path_col
 		cs.content_margin_left   = 16
 		cs.content_margin_right  = 16
-		cs.content_margin_top    = 16
-		cs.content_margin_bottom = 16
+		cs.content_margin_top    = 20
+		cs.content_margin_bottom = 20
 		cs.corner_radius_top_left     = 3
 		cs.corner_radius_top_right    = 3
 		cs.corner_radius_bottom_left  = 3
 		cs.corner_radius_bottom_right = 3
-		card.add_theme_stylebox_override("normal",  cs)
-		var cs_h := cs.duplicate() as StyleBoxFlat
-		cs_h.bg_color = Color(path_col.r, path_col.g, path_col.b, 0.22)
-		card.add_theme_stylebox_override("hover",   cs_h)
-		card.add_theme_stylebox_override("pressed", cs_h)
-		card.add_theme_stylebox_override("focus",   cs)
+		card_panel.add_theme_stylebox_override("panel", cs)
 
 		var card_vbox := VBoxContainer.new()
-		card_vbox.add_theme_constant_override("separation", 8)
-		card_vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		card.add_child(card_vbox)
+		card_vbox.add_theme_constant_override("separation", 12)
+		card_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card_panel.add_child(card_vbox)
 
 		var letter_lbl := Label.new()
 		letter_lbl.text = opt.get("letter", "")
 		letter_lbl.add_theme_font_size_override("font_size", 11)
 		letter_lbl.add_theme_color_override("font_color", path_col)
 		letter_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		letter_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		letter_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		letter_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card_vbox.add_child(letter_lbl)
 
 		var name_lbl := Label.new()
 		name_lbl.text = opt.get("name", "")
-		name_lbl.add_theme_font_size_override("font_size", 14)
+		name_lbl.add_theme_font_size_override("font_size", 18)
 		name_lbl.add_theme_color_override("font_color", path_col)
 		name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card_vbox.add_child(name_lbl)
+
+		var sep_line := HSeparator.new()
+		var sep_style := StyleBoxFlat.new()
+		sep_style.bg_color = Color(path_col.r, path_col.g, path_col.b, 0.35)
+		sep_line.add_theme_stylebox_override("separator", sep_style)
+		card_vbox.add_child(sep_line)
 
 		var desc_lbl := Label.new()
 		desc_lbl.text = opt.get("desc", "")
-		desc_lbl.add_theme_font_size_override("font_size", 11)
+		desc_lbl.add_theme_font_size_override("font_size", 12)
 		desc_lbl.add_theme_color_override("font_color", COL_INK_DIM)
 		desc_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card_vbox.add_child(desc_lbl)
 
+		# Clickable button overlay
+		var card_btn := Button.new()
+		card_btn.set_anchors_preset(Control.PRESET_FULL_RECT)
+		card_btn.flat = true
+		card_btn.focus_mode = Control.FOCUS_NONE
+		var t_style := StyleBoxFlat.new()
+		t_style.bg_color = Color(0, 0, 0, 0)
+		card_btn.add_theme_stylebox_override("normal",  t_style)
+		var h_style := t_style.duplicate() as StyleBoxFlat
+		h_style.bg_color = Color(path_col.r, path_col.g, path_col.b, 0.12)
+		card_btn.add_theme_stylebox_override("hover",   h_style)
+		card_btn.add_theme_stylebox_override("pressed", h_style)
+		card_btn.add_theme_stylebox_override("focus",   t_style)
 		var opt_id: String = opt.get("id", "")
-		card.pressed.connect(func() -> void:
+		card_btn.pressed.connect(func() -> void:
 			_choice_overlay.visible = false
 			on_pick.call(opt_id)
 		)
-		cards_row.add_child(card)
+		card_panel.add_child(card_btn)
+		cards_row.add_child(card_panel)
 
 	_choice_overlay.visible = true
 

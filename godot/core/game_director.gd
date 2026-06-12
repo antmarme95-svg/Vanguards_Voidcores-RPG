@@ -124,7 +124,7 @@ func _state_creation() -> Dictionary:
 			_build_creation_stage()
 
 			# Show creation UI
-			creation_ui.visible = true
+			creation_ui.show_panel()
 
 			# Wire callbacks
 			creation_ui.on_tab       = func(_tab_id: String) -> void: pass
@@ -146,7 +146,7 @@ func _state_creation() -> Dictionary:
 			creation_ui.on_confirm   = func(_name_text: String) -> void:
 				save.persist()
 				EventBus.emit_event("creation:complete", {"save": save})
-				creation_ui.visible = false
+				creation_ui.hide_panel()
 				_teardown_creation_stage()
 				transition(func() -> void: fsm.go("OFFICE")),
 
@@ -157,7 +157,7 @@ func _state_creation() -> Dictionary:
 				rig.rotation.y = _turntable_t * 0.35,
 
 		"exit": func(_ctx: Dictionary, _to: String) -> void:
-			creation_ui.visible = false
+			creation_ui.hide_panel()
 			_teardown_creation_stage(),
 	}
 
@@ -217,11 +217,16 @@ func _build_creation_stage() -> void:
 	_cam.position = _creation_platform.position + Vector3(0.0, 1.8, 4.5)
 	_cam.look_at(_creation_platform.position + Vector3(0, 1.0, 0))
 
-	# Apply default phenotype
+	# Apply default phenotype so rig shows skin tones instead of gray
 	if save != null:
+		var ph: Dictionary = save.phenotype
+		if ph.is_empty():
+			ph = PhenotypeData.default_phenotype()
 		var origin: Dictionary = save.get_origin()
-		if not origin.is_empty():
-			rig.apply_phenotype(save.phenotype, origin)
+		# If no origin chosen yet, use a sensible neutral default (aetherborn has a light skin tone)
+		if origin.is_empty():
+			origin = OriginsData.get_origin("aetherborn")
+		rig.apply_phenotype(ph, origin)
 
 func _teardown_creation_stage() -> void:
 	for light in _creation_lights:
@@ -245,6 +250,9 @@ func _state_office() -> Dictionary:
 	return {
 		"enter": func(_ctx: Dictionary, _from: String, _payload: Dictionary) -> void:
 			_record_state("OFFICE")
+			# Ensure creation panel is gone (belt-and-suspenders)
+			if creation_ui != null:
+				creation_ui.hide_panel()
 			var origin: Dictionary = save.get_origin()
 
 			# Build player systems (idempotent if already built)
@@ -325,6 +333,8 @@ func _state_city_exit() -> Dictionary:
 	return {
 		"enter": func(_ctx: Dictionary, _from: String, _payload: Dictionary) -> void:
 			_record_state("CITY_EXIT")
+			if creation_ui != null:
+				creation_ui.hide_panel()
 			var origin: Dictionary = save.get_origin()
 			var exit := CityExit.new(origin)
 			_set_scene(exit)
@@ -344,6 +354,8 @@ func _state_wilds() -> Dictionary:
 	return {
 		"enter": func(_ctx: Dictionary, _from: String, _payload: Dictionary) -> void:
 			_record_state("WILDS")
+			if creation_ui != null:
+				creation_ui.hide_panel()
 			var origin: Dictionary = save.get_origin()
 			var wilds := TheWilds.new(origin)
 			_set_scene(wilds)
@@ -410,6 +422,8 @@ func _state_choice() -> Dictionary:
 	return {
 		"enter": func(_ctx: Dictionary, _from: String, _payload: Dictionary) -> void:
 			_record_state("CHOICE")
+			if creation_ui != null:
+				creation_ui.hide_panel()
 			if controller != null:
 				controller.enabled = false
 			hud.hide_prompt()
@@ -423,6 +437,9 @@ func _state_choice() -> Dictionary:
 
 ## pick_path — autotest direct path (UI calls this via signal, or autotest directly)
 func pick_path(path_id: String) -> void:
+	# Dismiss choice overlay regardless of how pick_path is triggered
+	if quest_ui != null and quest_ui._choice_overlay != null:
+		quest_ui._choice_overlay.visible = false
 	var origin: Dictionary = save.get_origin()
 	quest_tracker.choose_path(path_id, origin)
 	var buff: Dictionary = PathsData.PATH_BUFFS.get(path_id, {})
@@ -439,6 +456,8 @@ func _state_free_roam() -> Dictionary:
 	return {
 		"enter": func(_ctx: Dictionary, _from: String, _payload: Dictionary) -> void:
 			_record_state("FREE_ROAM")
+			if creation_ui != null:
+				creation_ui.hide_panel()
 			EventBus.emit_event("ui:endCardRequested", {
 				"save": save,
 				"chosen_path": save.chosen_path,
@@ -580,7 +599,7 @@ func _build_ui_layers() -> void:
 	creation_ui = _CreationUI.new()
 	creation_ui._save = save
 	add_child(creation_ui)
-	creation_ui.visible = false
+	creation_ui.hide_panel()
 
 	# HUD
 	hud = _HUD.new()

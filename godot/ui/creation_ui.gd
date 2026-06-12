@@ -37,6 +37,7 @@ var _accent: Color = COL_ACCENT
 var _name_touched: bool = false
 
 # ---- UI nodes ----
+var _full_control: Control       # direct child of CanvasLayer; toggled for hide/show
 var _root_panel: PanelContainer
 var _tab_buttons: Array = []
 var _tab_body: VBoxContainer
@@ -56,6 +57,7 @@ func _ready() -> void:
 	if _save != null:
 		show_tab("origin")
 
+
 # ================================================================
 func _build_ui() -> void:
 	# Full-screen container — left 31% is the panel, rest is transparent
@@ -63,6 +65,7 @@ func _build_ui() -> void:
 	full.set_anchors_preset(Control.PRESET_FULL_RECT)
 	full.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(full)
+	_full_control = full
 
 	# Left panel — dark gradient
 	_root_panel = PanelContainer.new()
@@ -320,34 +323,41 @@ func _make_card_style(selected: bool) -> StyleBoxFlat:
 # ================================================================
 func _build_origin_tab() -> void:
 	_section_label("Choose your lineage — it picks your kingdom, your passive, and your enemies")
+	# _tab_body is a VBoxContainer with separation=6, so cards naturally have gaps
 	for origin in OriginsData.ORIGINS:
 		var is_sel: bool = _save.origin_id == origin["id"]
 		var card := _make_origin_card(origin, is_sel)
 		_tab_body.add_child(card)
 
-func _make_origin_card(origin: Dictionary, selected: bool) -> Button:
-	var card := Button.new()
-	card.focus_mode = Control.FOCUS_NONE
-	card.flat = false
-	card.add_theme_stylebox_override("normal",   _make_card_style(selected))
-	card.add_theme_stylebox_override("hover",    _make_card_style(true))
-	card.add_theme_stylebox_override("pressed",  _make_card_style(true))
-	card.add_theme_stylebox_override("focus",    _make_card_style(selected))
+func _make_origin_card(origin: Dictionary, selected: bool) -> PanelContainer:
+	# PanelContainer drives card size via container layout; VBoxContainer fills it.
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	card.add_theme_stylebox_override("panel", _make_card_style(selected))
+	card.set_meta("origin_id", origin["id"])
 
 	var inner := VBoxContainer.new()
 	inner.add_theme_constant_override("separation", 4)
-	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.mouse_filter = Control.MOUSE_FILTER_PASS
+	card.add_child(inner)
 
 	var tag := Label.new()
 	tag.text = origin.get("tag", "")
 	tag.add_theme_font_size_override("font_size", 9)
 	tag.add_theme_color_override("font_color", _accent)
+	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tag.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(tag)
 
 	var name_lbl := Label.new()
 	name_lbl.text = origin.get("name", "")
 	name_lbl.add_theme_font_size_override("font_size", 14)
 	name_lbl.add_theme_color_override("font_color", COL_INK)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(name_lbl)
 
 	var lore := Label.new()
@@ -355,6 +365,8 @@ func _make_origin_card(origin: Dictionary, selected: bool) -> Button:
 	lore.add_theme_font_size_override("font_size", 11)
 	lore.add_theme_color_override("font_color", COL_INK_DIM)
 	lore.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lore.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lore.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(lore)
 
 	var passive: Dictionary = origin.get("passive", {})
@@ -363,6 +375,8 @@ func _make_origin_card(origin: Dictionary, selected: bool) -> Button:
 	passive_lbl.add_theme_font_size_override("font_size", 10)
 	passive_lbl.add_theme_color_override("font_color", COL_GOLD)
 	passive_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	passive_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	passive_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(passive_lbl)
 
 	var city: Dictionary = origin.get("city", {})
@@ -371,6 +385,8 @@ func _make_origin_card(origin: Dictionary, selected: bool) -> Button:
 	city_lbl.add_theme_font_size_override("font_size", 10)
 	city_lbl.add_theme_color_override("font_color", COL_INK_DIM)
 	city_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	city_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	city_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(city_lbl)
 
 	# Stat chips from passive attribute mods
@@ -378,15 +394,21 @@ func _make_origin_card(origin: Dictionary, selected: bool) -> Button:
 	if not mods.is_empty():
 		var chips_row := HBoxContainer.new()
 		chips_row.add_theme_constant_override("separation", 6)
-		chips_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		chips_row.mouse_filter = Control.MOUSE_FILTER_PASS
 		for k in mods:
 			var chip := _make_stat_chip(k.capitalize(), str(mods[k]))
+			chip.mouse_filter = Control.MOUSE_FILTER_PASS
 			chips_row.add_child(chip)
 		inner.add_child(chips_row)
 
-	card.add_child(inner)
+	# Use gui_input on the PanelContainer for click detection
 	var oid: String = origin["id"]
-	card.pressed.connect(func() -> void: _on_origin_selected(oid))
+	card.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+				_on_origin_selected(oid)
+	)
 	return card
 
 # ================================================================
@@ -397,29 +419,35 @@ func _build_class_tab() -> void:
 		var card := _make_class_card(cls, is_sel)
 		_tab_body.add_child(card)
 
-func _make_class_card(cls: Dictionary, selected: bool) -> Button:
-	var card := Button.new()
-	card.focus_mode = Control.FOCUS_NONE
-	card.flat = false
-	card.add_theme_stylebox_override("normal",  _make_card_style(selected))
-	card.add_theme_stylebox_override("hover",   _make_card_style(true))
-	card.add_theme_stylebox_override("pressed", _make_card_style(true))
-	card.add_theme_stylebox_override("focus",   _make_card_style(selected))
+func _make_class_card(cls: Dictionary, selected: bool) -> PanelContainer:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	card.add_theme_stylebox_override("panel", _make_card_style(selected))
+	var cls_id: String = cls["id"]
+	card.set_meta("class_id", cls_id)
 
 	var inner := VBoxContainer.new()
 	inner.add_theme_constant_override("separation", 4)
-	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.mouse_filter = Control.MOUSE_FILTER_PASS
+	card.add_child(inner)
 
 	var tag := Label.new()
 	tag.text = cls.get("tag", "")
 	tag.add_theme_font_size_override("font_size", 9)
 	tag.add_theme_color_override("font_color", _accent)
+	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tag.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(tag)
 
 	var name_lbl := Label.new()
 	name_lbl.text = cls.get("name", "")
 	name_lbl.add_theme_font_size_override("font_size", 14)
 	name_lbl.add_theme_color_override("font_color", COL_INK)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(name_lbl)
 
 	var desc_lbl := Label.new()
@@ -427,18 +455,26 @@ func _make_class_card(cls: Dictionary, selected: bool) -> Button:
 	desc_lbl.add_theme_font_size_override("font_size", 11)
 	desc_lbl.add_theme_color_override("font_color", COL_INK_DIM)
 	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	desc_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(desc_lbl)
 
 	var attrs: Dictionary = cls.get("attributes", {})
 	var chips_row := HBoxContainer.new()
 	chips_row.add_theme_constant_override("separation", 6)
-	chips_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chips_row.mouse_filter = Control.MOUSE_FILTER_PASS
 	if attrs.has("health"):
-		chips_row.add_child(_make_stat_chip("HP", str(attrs["health"])))
+		var ch_hp := _make_stat_chip("HP", str(attrs["health"]))
+		ch_hp.mouse_filter = Control.MOUSE_FILTER_PASS
+		chips_row.add_child(ch_hp)
 	if attrs.has("magicka"):
-		chips_row.add_child(_make_stat_chip("MP", str(attrs["magicka"])))
+		var ch_mp := _make_stat_chip("MP", str(attrs["magicka"]))
+		ch_mp.mouse_filter = Control.MOUSE_FILTER_PASS
+		chips_row.add_child(ch_mp)
 	if attrs.has("stamina"):
-		chips_row.add_child(_make_stat_chip("SP", str(attrs["stamina"])))
+		var ch_sp := _make_stat_chip("SP", str(attrs["stamina"]))
+		ch_sp.mouse_filter = Control.MOUSE_FILTER_PASS
+		chips_row.add_child(ch_sp)
 	inner.add_child(chips_row)
 
 	var combat: Dictionary = cls.get("combat", {})
@@ -453,11 +489,16 @@ func _make_class_card(cls: Dictionary, selected: bool) -> Button:
 	weapon_lbl.add_theme_font_size_override("font_size", 10)
 	weapon_lbl.add_theme_color_override("font_color", COL_INK_DIM)
 	weapon_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	weapon_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	weapon_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	inner.add_child(weapon_lbl)
 
-	card.add_child(inner)
-	var cls_id: String = cls["id"]
-	card.pressed.connect(func() -> void: _on_class_card_pressed(cls_id))
+	card.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+				_on_class_card_pressed(cls_id)
+	)
 	return card
 
 func _make_stat_chip(label_text: String, value: String) -> Label:
@@ -764,3 +805,16 @@ func move_slider(field_id: String, value: float) -> void:
 	# Walk the tab body looking for the slider with matching field
 	_save.phenotype[field_id] = value
 	on_phenotype.call(field_id, value)
+
+# ---- Explicit show/hide: toggle root Control child so panel hides reliably ----
+# CanvasLayer.visible is unreliable in headless Godot 4.6; we toggle the
+# actual Control child directly. Call these instead of .visible = true/false.
+func show_panel() -> void:
+	visible = true
+	if _full_control != null:
+		_full_control.visible = true
+
+func hide_panel() -> void:
+	visible = false
+	if _full_control != null:
+		_full_control.visible = false
