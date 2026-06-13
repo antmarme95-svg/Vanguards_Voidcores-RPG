@@ -96,6 +96,7 @@ func _build_dialogue_box() -> void:
 	ps.content_margin_top    = 12
 	ps.content_margin_bottom = 10
 	_dlg_box.add_theme_stylebox_override("panel", ps)
+	_dlg_box.visible = false  # hidden until open_dialogue — is_open() reads this
 	add_child(_dlg_box)
 
 	var inner := VBoxContainer.new()

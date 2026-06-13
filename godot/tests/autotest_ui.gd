@@ -132,18 +132,26 @@ func _run_ui() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	# Fire dialogue via event (same as when player presses E)
-	EventBus.emit_event("ui:dialogueRequested", {
-		"interactable": {"id": "recruiter"},
-		"origin": _director.save.get_origin(),
-	})
+	# Synthesize real E key press to trigger game's own E-handling
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_E
+	ev.physical_keycode = KEY_E
+	ev.pressed = true
+	Input.parse_input_event(ev)
+	# release next frame so the just-pressed latch can fire cleanly
+	await get_tree().process_frame
+	var ev_up := InputEventKey.new()
+	ev_up.keycode = KEY_E
+	ev_up.physical_keycode = KEY_E
+	ev_up.pressed = false
+	Input.parse_input_event(ev_up)
 
 	# Poll until dialogue is open
 	var dlg_ok: bool = await _until(
 		func() -> bool: return _director.dialogue_ui != null and _director.dialogue_ui.is_open(),
-		3.0, "Dialogue opened"
+		3.0, "E press did not open recruiter dialogue"
 	)
-	_assert_true(dlg_ok, "Dialogue opened after ui:dialogueRequested")
+	_assert_true(dlg_ok, "Dialogue opened after E press")
 	for _i in range(3):
 		await get_tree().process_frame
 
