@@ -55,6 +55,7 @@ var _allegiance_chip: Label
 var _toast_panel: PanelContainer
 var _toast_label: Label
 var _vignette: ColorRect
+var _crosshair: Control
 
 # ================================================================
 func _ready() -> void:
@@ -64,6 +65,7 @@ func _ready() -> void:
 	_build_interact_prompt()
 	_build_toast()
 	_build_vignette()
+	_build_crosshair()
 	_build_chips()
 	_stamina_wheel = StaminaWheel.new()
 	_stamina_wheel.set_accent(_accent)
@@ -295,6 +297,28 @@ func _build_vignette() -> void:
 	_vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_vignette)
+
+func _build_crosshair() -> void:
+	_crosshair = ColorRect.new()
+	_crosshair.color = Color(1.0, 1.0, 1.0, 0.75)
+	_crosshair.set_anchor(SIDE_LEFT,   0.5)
+	_crosshair.set_anchor(SIDE_TOP,    0.5)
+	_crosshair.set_anchor(SIDE_RIGHT,  0.5)
+	_crosshair.set_anchor(SIDE_BOTTOM, 0.5)
+	_crosshair.set_offset(SIDE_LEFT,  -3)
+	_crosshair.set_offset(SIDE_RIGHT,   3)
+	_crosshair.set_offset(SIDE_TOP,   -3)
+	_crosshair.set_offset(SIDE_BOTTOM,  3)
+	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_crosshair)
+
+func show_crosshair() -> void:
+	if _crosshair != null:
+		_crosshair.visible = true
+
+func hide_crosshair() -> void:
+	if _crosshair != null:
+		_crosshair.visible = false
 
 func _build_chips() -> void:
 	_passive_chip = PanelContainer.new()

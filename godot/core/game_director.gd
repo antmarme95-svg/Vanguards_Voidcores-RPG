@@ -30,6 +30,7 @@ var creation_ui                = null  # CreationUI
 var hud                        = null  # HUD
 var dialogue_ui                = null  # DialogueUI
 var quest_ui                   = null  # QuestUI
+var pause_ui                   = null  # PauseUI
 
 # ---- creation stage helpers ----
 var _creation_env: WorldEnvironment = null
@@ -272,6 +273,7 @@ func _state_office() -> Dictionary:
 
 			# HUD
 			hud.visible = true
+			hud.show_crosshair()
 			hud.set_passive(origin)
 			var theme: Dictionary = origin.get("theme", {})
 			var accent_hex: String = theme.get("accent", "#46e6ff")
@@ -590,8 +592,9 @@ func _build_ui_layers() -> void:
 	var _HUD: GDScript        = load("res://ui/hud.gd")
 	var _DialogueUI: GDScript = load("res://ui/dialogue_ui.gd")
 	var _QuestUI: GDScript    = load("res://ui/quest_ui.gd")
+	var _PauseUI: GDScript    = load("res://ui/pause_ui.gd")
 
-	if _CreationUI == null or _HUD == null or _DialogueUI == null or _QuestUI == null:
+	if _CreationUI == null or _HUD == null or _DialogueUI == null or _QuestUI == null or _PauseUI == null:
 		push_error("[GameDirector] Failed to load one or more UI scripts")
 		return
 
@@ -615,6 +618,11 @@ func _build_ui_layers() -> void:
 	quest_ui = _QuestUI.new()
 	add_child(quest_ui)
 
+	# PauseUI
+	pause_ui = _PauseUI.new()
+	add_child(pause_ui)
+	EventBus.on("player:pause_toggled", _on_pause_toggled)
+
 # ================================================================
 # Dialogue request handler
 # ================================================================
@@ -629,6 +637,7 @@ func _on_dialogue_requested(payload: Dictionary) -> void:
 		return
 	dialogue_ui.visible = true
 	controller.enabled = false
+	hud.hide_crosshair()
 	dialogue_ui.start_tree(tree, func(action: String) -> void:
 		if action == "openContract":
 			dialogue_ui.visible = true
@@ -641,8 +650,25 @@ func _on_dialogue_requested(payload: Dictionary) -> void:
 			dialogue_ui.visible = false
 			dialogue_ui.close_dialogue()
 			controller.enabled = true
+			hud.show_crosshair()
 			EventBus.emit_event("quest:toast", {"text": "The doors are open — deploy to The Wilds"})
 	, Color(accent_hex))
+
+# ================================================================
+# Pause toggle handler
+# ================================================================
+func _on_pause_toggled(_payload: Dictionary) -> void:
+	if pause_ui == null or controller == null:
+		return
+	if dialogue_ui != null and dialogue_ui.is_open():
+		return
+	if pause_ui.is_open():
+		pause_ui.close()
+		hud.show_crosshair()
+	else:
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		hud.hide_crosshair()
+		pause_ui.open(controller)
 
 # ================================================================
 # ui:pathChosen / ui:continueRoam event handlers (from QuestUI)

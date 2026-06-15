@@ -54,6 +54,10 @@ var projectiles: Array     = []
 
 var _enabled: bool = false
 
+# ---- mouse sensitivity ----
+var sens_x: float = 1.0
+var sens_y: float = 1.0
+
 # ---- input state ----
 var _keys_down: Dictionary = {}   # keyed by event physical_keycode
 var _mouse_captured: bool  = false
@@ -83,6 +87,10 @@ var enabled: bool:
 		if not v and _mouse_captured:
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 			_mouse_captured = false
+
+func recapture_mouse() -> void:
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+	_mouse_captured = true
 
 func is_sneaking() -> bool:
 	return crouching
@@ -136,8 +144,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	elif event is InputEventMouseMotion and _mouse_captured and _enabled:
 		var mm := event as InputEventMouseMotion
-		cam_yaw   -= mm.relative.x * 0.0052
-		cam_pitch  = clampf(cam_pitch + mm.relative.y * 0.0045, CAM_PITCH_MIN, CAM_PITCH_MAX)
+		cam_yaw   -= mm.relative.x * 0.0052 * sens_x
+		cam_pitch  = clampf(cam_pitch + mm.relative.y * 0.0045 * sens_y, CAM_PITCH_MIN, CAM_PITCH_MAX)
 
 	elif event is InputEventKey:
 		var ke := event as InputEventKey
@@ -153,8 +161,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif kc == KEY_F:
 				try_attack()
 			elif kc == KEY_ESCAPE:
-				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-				_mouse_captured = false
+				EventBus.emit_event("player:pause_toggled", {})
 		elif not ke.pressed:
 			_keys_down.erase(kc)
 
