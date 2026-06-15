@@ -417,10 +417,20 @@ func _sync_camera(blend: float) -> void:
 		target.y + sp * cam_dist,
 		target.z + cos(cam_yaw) * cp * cam_dist
 	) + shoulder
+	# Camera-terrain collision: march from the player toward the orbit point and
+	# pull the camera in to just before the first terrain hit, so the lens never
+	# enters a hill. A camera inside terrain back-face-culls the slope, making the
+	# hill look "see-through" (trees behind it become visible).
 	if scene != null and scene.has_method("get_height"):
-		var min_y: float = scene.get_height(desired.x, desired.z) + 0.35
-		if desired.y < min_y:
-			desired.y = min_y
+		var steps := 16
+		var safe_t := 1.0
+		for i in range(1, steps + 1):
+			var t: float = float(i) / float(steps)
+			var p := target.lerp(desired, t)
+			if p.y < scene.get_height(p.x, p.z) + 0.6:
+				safe_t = float(i - 1) / float(steps)
+				break
+		desired = target.lerp(desired, safe_t)
 	# Clamp inline — scene.clamp_camera passes Vector3 by value so it can't modify desired
 	if scene != null and scene.has_method("get_bounds"):
 		var bounds: Dictionary = scene.get_bounds()
@@ -428,4 +438,9 @@ func _sync_camera(blend: float) -> void:
 		desired.z = clamp(desired.z, bounds.get("z_min", -999.0), bounds.get("z_max", 999.0))
 		desired.y = clamp(desired.y, bounds.get("y_min", 0.35),   bounds.get("y_max", 999.0))
 	cam.position = cam.position.lerp(desired, blend)
+	# Hard floor after the blend so a fast tween never dips the lens into the ground.
+	if scene != null and scene.has_method("get_height"):
+		var floor_y: float = scene.get_height(cam.position.x, cam.position.z) + 0.4
+		if cam.position.y < floor_y:
+			cam.position.y = floor_y
 	cam.look_at(target + shoulder)
