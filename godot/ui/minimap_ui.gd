@@ -15,7 +15,9 @@ func _ready() -> void:
 	layer = 8
 	_build()
 	visible = false
-	EventBus.on("minimap:toggled", _on_toggle)
+	# Note: the "minimap:toggled" event is handled by GameDirector (which adds the
+	# dialogue/pause guards and calls toggle() here). Do NOT subscribe again, or the
+	# two handlers cancel each other and the map never shows.
 
 func _build() -> void:
 	# Dim backdrop (game stays faintly visible behind)
@@ -97,9 +99,6 @@ func toggle() -> void:
 
 func is_open() -> bool:
 	return visible
-
-func _on_toggle(_payload: Dictionary) -> void:
-	toggle()
 
 func _process(_dt: float) -> void:
 	if visible and _canvas != null:
