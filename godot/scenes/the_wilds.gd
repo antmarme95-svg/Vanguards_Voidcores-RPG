@@ -15,6 +15,23 @@ const _DayNightCycle = preload("res://scenes/day_night.gd")
 # ================================================================
 const BIOME_PRESETS: Dictionary = {
 	"wilds": {
+		# Terrain vertex-color palette
+		"terrain_colors": {
+			"grass":  Color("#3aaa30"),
+			"lush":   Color("#267a38"),
+			"dry":    Color("#7aa83a"),
+			"scorch": Color("#4a3434"),
+		},
+		# Grass shader albedo and per-instance color array
+		"grass_albedo":  Color("#4ec844"),
+		"grass_colors": [
+			Color("#5ec84e"),
+			Color("#42b048"),
+			Color("#6cd458"),
+			Color("#4ac050"),
+			Color("#72de60"),
+			Color("#38a040"),
+		],
 		# Background / sky fill color
 		"bg_color":              Color("#bfe3d4"),
 		# Depth fog
@@ -44,6 +61,23 @@ const BIOME_PRESETS: Dictionary = {
 		"sun_energy":            1.1,
 	},
 	"smelting_craters": {
+		# Terrain vertex-color palette — warm/ashen volcanic ground
+		"terrain_colors": {
+			"grass":  Color("#8a6a3a"),
+			"lush":   Color("#5a3a22"),
+			"dry":    Color("#a8843a"),
+			"scorch": Color("#3a2018"),
+		},
+		# Grass shader albedo and per-instance color array — warm ochre/ash
+		"grass_albedo":  Color("#9a7038"),
+		"grass_colors": [
+			Color("#a8843a"),
+			Color("#7a5a2a"),
+			Color("#b89048"),
+			Color("#6a4a22"),
+			Color("#c0985a"),
+			Color("#5a3e1e"),
+		],
 		# Background / sky fill — warm ash-orange sky
 		"bg_color":              Color("#caa07a"),
 		# Depth fog — warm ash-orange haze; denser than Wilds for industrial mood
@@ -331,11 +365,14 @@ func _build_terrain() -> void:
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 
-	# Richer, more saturated greens — deeper BotW meadow palette
-	var c_grass = Color("#3aaa30")
-	var c_lush = Color("#267a38")
-	var c_dry = Color("#7aa83a")
-	var c_scorch = Color("#4a3434")
+	# Resolve biome palette — same lookup pattern as _build_environment().
+	var p: Dictionary = BIOME_PRESETS.get(biome_preset, BIOME_PRESETS["wilds"])
+	var tc: Dictionary = p.get("terrain_colors", {})
+	# Richer, more saturated greens — deeper BotW meadow palette (wilds defaults)
+	var c_grass:  Color = tc.get("grass",  Color("#3aaa30"))
+	var c_lush:   Color = tc.get("lush",   Color("#267a38"))
+	var c_dry:    Color = tc.get("dry",    Color("#7aa83a"))
+	var c_scorch: Color = tc.get("scorch", Color("#4a3434"))
 
 	# Build vertex grid (SIZE x SIZE, seg x seg segments)
 	# Vertices: (seg+1) x (seg+1)
@@ -499,7 +536,9 @@ void light() {
 	grass_shader.code = grass_shader_code
 	_wind_mat = ShaderMaterial.new()
 	_wind_mat.shader = grass_shader
-	_wind_mat.set_shader_parameter("albedo_color", Color("#4ec844"))
+	# Resolve biome palette — same lookup pattern as _build_environment().
+	var p: Dictionary = BIOME_PRESETS.get(biome_preset, BIOME_PRESETS["wilds"])
+	_wind_mat.set_shader_parameter("albedo_color", p.get("grass_albedo", Color("#4ec844")))
 	_wind_mat.set_shader_parameter("wind_time", 0.0)
 	_wind_mat.set_shader_parameter("tip_brighten", 0.28)
 
@@ -510,16 +549,16 @@ void light() {
 	mm.instance_count = COUNT
 	mm.mesh = blade_mesh
 
-	# Bright meadow greens — need to be light enough that base_tint*COLOR stays visible
-	# (the shader multiplies albedo_color * COLOR; both must be bright enough)
-	var greens = [
+	# Per-instance color array sourced from biome preset.
+	# Fallback is the original wilds palette so the default look is byte-identical.
+	var greens: Array = p.get("grass_colors", [
 		Color("#5ec84e"),  # bright grass
 		Color("#42b048"),  # mid lush
 		Color("#6cd458"),  # lighter meadow
 		Color("#4ac050"),  # balanced lush
 		Color("#72de60"),  # very bright tip match
 		Color("#38a040"),  # deeper lush
-	]
+	])
 	var patches_count = GRASS_PATCHES.size()
 	# Split: first 14000 blades go in dense patches; last 6000 scatter across the roam ring
 	var PATCH_COUNT = 14000

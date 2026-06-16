@@ -95,5 +95,74 @@ func _run_tests() -> void:
 		"cases": _results,
 	})
 
+	# ---- Palette preset assertions (Task D) ----
+	# Prove the palette is preset-driven: verify BIOME_PRESETS values directly from
+	# the class constant (accessible because TheWilds has class_name TheWilds).
+	# (a) terrain_colors.grass and grass_albedo DIFFER between "wilds" and "smelting_craters"
+	# (b) wilds values equal the original baseline
+	# (c) smelting_craters is the warm set
+	_run_palette_assertions()
+
 	print("[autotest_biome] all done, quitting")
 	get_tree().quit(0)
+
+func _run_palette_assertions() -> void:
+	var wilds_preset: Dictionary = TheWilds.BIOME_PRESETS.get("wilds", {})
+	var smelting_preset: Dictionary = TheWilds.BIOME_PRESETS.get("smelting_craters", {})
+
+	# ---- (a) terrain_colors.grass and grass_albedo must differ between presets ----
+	var wilds_tc: Dictionary = wilds_preset.get("terrain_colors", {})
+	var smelting_tc: Dictionary = smelting_preset.get("terrain_colors", {})
+
+	var wilds_grass: Color = wilds_tc.get("grass", Color.BLACK)
+	var smelting_grass: Color = smelting_tc.get("grass", Color.BLACK)
+	if wilds_grass != smelting_grass:
+		print("PASS palette: terrain_colors.grass differs between wilds and smelting_craters")
+	else:
+		print("FAIL palette: terrain_colors.grass is identical between presets: " + str(wilds_grass))
+
+	var wilds_albedo: Color = wilds_preset.get("grass_albedo", Color.BLACK)
+	var smelting_albedo: Color = smelting_preset.get("grass_albedo", Color.BLACK)
+	if wilds_albedo != smelting_albedo:
+		print("PASS palette: grass_albedo differs between wilds and smelting_craters")
+	else:
+		print("FAIL palette: grass_albedo is identical between presets: " + str(wilds_albedo))
+
+	# ---- (b) wilds values equal the documented originals ----
+	# terrain_colors.grass == #3aaa30
+	var expected_wilds_grass := Color("#3aaa30")
+	if wilds_grass.is_equal_approx(expected_wilds_grass):
+		print("PASS palette: wilds terrain_colors.grass == #3aaa30 (" + str(wilds_grass) + ")")
+	else:
+		print("FAIL palette: wilds terrain_colors.grass expected #3aaa30 got " + str(wilds_grass))
+
+	# grass_albedo == #4ec844
+	var expected_wilds_albedo := Color("#4ec844")
+	if wilds_albedo.is_equal_approx(expected_wilds_albedo):
+		print("PASS palette: wilds grass_albedo == #4ec844 (" + str(wilds_albedo) + ")")
+	else:
+		print("FAIL palette: wilds grass_albedo expected #4ec844 got " + str(wilds_albedo))
+
+	# ---- (c) smelting_craters is the warm set ----
+	# terrain_colors.grass == #8a6a3a
+	var expected_smelting_grass := Color("#8a6a3a")
+	if smelting_grass.is_equal_approx(expected_smelting_grass):
+		print("PASS palette: smelting terrain_colors.grass == #8a6a3a (" + str(smelting_grass) + ")")
+	else:
+		print("FAIL palette: smelting terrain_colors.grass expected #8a6a3a got " + str(smelting_grass))
+
+	# grass_albedo == #9a7038
+	var expected_smelting_albedo := Color("#9a7038")
+	if smelting_albedo.is_equal_approx(expected_smelting_albedo):
+		print("PASS palette: smelting grass_albedo == #9a7038 (" + str(smelting_albedo) + ")")
+	else:
+		print("FAIL palette: smelting grass_albedo expected #9a7038 got " + str(smelting_albedo))
+
+	# ---- Object/cel register check: both presets must have identical grass_colors array length ----
+	var wilds_colors: Array = wilds_preset.get("grass_colors", [])
+	var smelting_colors: Array = smelting_preset.get("grass_colors", [])
+	if wilds_colors.size() == smelting_colors.size() and wilds_colors.size() == 6:
+		print("PASS palette: both presets have grass_colors[6] (same object register)")
+	else:
+		print("FAIL palette: grass_colors size mismatch wilds=%d smelting=%d (expected 6)" % [
+			wilds_colors.size(), smelting_colors.size()])

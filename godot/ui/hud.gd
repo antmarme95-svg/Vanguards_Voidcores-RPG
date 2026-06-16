@@ -72,9 +72,10 @@ func _ready() -> void:
 	add_child(_stamina_wheel)
 	visible = false
 
-	EventBus.on("quest:toast",      _on_toast)
-	EventBus.on("combat:playerHit", _on_player_hit)
-	EventBus.on("passive:toggled",  _on_passive_toggled)
+	EventBus.on("quest:toast",        _on_toast)
+	EventBus.on("combat:playerHit",   _on_player_hit)
+	EventBus.on("passive:toggled",    _on_passive_toggled)
+	EventBus.on("player:ads_changed", func(p): set_ads(p.get("active", false)))
 
 # ================================================================
 func _build_compass() -> void:
@@ -304,10 +305,10 @@ func _build_crosshair() -> void:
 	_crosshair.set_anchor(SIDE_TOP,    0.5)
 	_crosshair.set_anchor(SIDE_RIGHT,  0.5)
 	_crosshair.set_anchor(SIDE_BOTTOM, 0.5)
-	_crosshair.set_offset(SIDE_LEFT,  -8)
-	_crosshair.set_offset(SIDE_RIGHT,   8)
-	_crosshair.set_offset(SIDE_TOP,   -8)
-	_crosshair.set_offset(SIDE_BOTTOM,  8)
+	_crosshair.set_offset(SIDE_LEFT,  -12)
+	_crosshair.set_offset(SIDE_RIGHT,   12)
+	_crosshair.set_offset(SIDE_TOP,   -12)
+	_crosshair.set_offset(SIDE_BOTTOM,  12)
 	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_crosshair)
 
@@ -318,6 +319,11 @@ func show_crosshair() -> void:
 func hide_crosshair() -> void:
 	if _crosshair != null:
 		_crosshair.visible = false
+
+func set_ads(active: bool) -> void:
+	if _crosshair != null and _crosshair is CrosshairDot:
+		(_crosshair as CrosshairDot).ads = active
+		_crosshair.queue_redraw()
 
 func _build_chips() -> void:
 	_passive_chip = PanelContainer.new()
@@ -562,8 +568,20 @@ class StaminaWheel extends Control:
 # Crosshair dot — small circle with dark outline, visible on any bg
 # ================================================================
 class CrosshairDot extends Control:
+	var ads: bool = false
 	func _draw() -> void:
 		var cx: float = size.x * 0.5
 		var cy: float = size.y * 0.5
-		draw_circle(Vector2(cx, cy), 4.0, Color(0.0, 0.0, 0.0, 0.55))
-		draw_circle(Vector2(cx, cy), 2.5, Color(1.0, 1.0, 1.0, 0.90))
+		if ads:
+			# Tighter aiming reticle: small center dot + thin ring + 4 ticks
+			draw_circle(Vector2(cx, cy), 2.0, Color(0.0, 0.0, 0.0, 0.55))
+			draw_circle(Vector2(cx, cy), 1.2, Color(1.0, 1.0, 1.0, 0.95))
+			draw_arc(Vector2(cx, cy), 7.0, 0.0, TAU, 32, Color(1.0, 1.0, 1.0, 0.75), 1.0, true)
+			var tick: float = 3.0
+			draw_line(Vector2(cx, cy - 7.0 - tick), Vector2(cx, cy - 7.0), Color(1, 1, 1, 0.75), 1.0)
+			draw_line(Vector2(cx, cy + 7.0), Vector2(cx, cy + 7.0 + tick), Color(1, 1, 1, 0.75), 1.0)
+			draw_line(Vector2(cx - 7.0 - tick, cy), Vector2(cx - 7.0, cy), Color(1, 1, 1, 0.75), 1.0)
+			draw_line(Vector2(cx + 7.0, cy), Vector2(cx + 7.0 + tick, cy), Color(1, 1, 1, 0.75), 1.0)
+		else:
+			draw_circle(Vector2(cx, cy), 4.0, Color(0.0, 0.0, 0.0, 0.55))
+			draw_circle(Vector2(cx, cy), 2.5, Color(1.0, 1.0, 1.0, 0.90))

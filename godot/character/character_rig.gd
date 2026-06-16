@@ -103,6 +103,7 @@ var accent: Color = Color("#46e6ff")
 # Per-origin visual state
 var _spark_particles: GPUParticles3D = null   # ironblooded sparks node
 var _fur_slot: Node3D = null                  # miststalker fake-fur node
+var _iron_armor: Array = []                   # ironblooded armor pieces: [{node, base}]
 
 # Motion / animation state
 var _t: float = 0.0
@@ -534,6 +535,16 @@ func _apply_build() -> void:
 			pauldron.scale = Vector3(1.3, 1.2, 1.3)
 		else:
 			pauldron.scale = Vector3.ONE
+
+	# Ironblooded armor pieces: scale X/Z by arch_xz so armor is bulky on
+	# Vanguard (1.30), lean on Duelist (0.80), neutral on Strategist (1.0).
+	# Y is kept at base so piece height doesn't stretch with body width.
+	# Safe no-op when _iron_armor is empty (non-ironblooded origins).
+	for entry in _iron_armor:
+		var n = entry.get("node")
+		if is_instance_valid(n):
+			var b: Vector3 = entry.get("base", Vector3.ONE)
+			n.scale = Vector3(b.x * arch_xz, b.y, b.z * arch_xz)
 
 	# Strategist: floating focus orb (only for mage; remove for all others)
 	_update_focus_orb()
@@ -1211,6 +1222,64 @@ func _apply_origin_rim() -> void:
 			mat.set_shader_parameter("rim_color", rim_col)
 			mat.set_shader_parameter("rim_strength", rim_str)
 
+# ================================================================
+# _build_iron_armor — creates cel-shaded metal armor pieces for the ironblooded
+# origin: left pauldron, chest plate, two greaves, two bracers.
+# All pieces use metal_mat so they automatically inherit the dark-iron albedo +
+# orange-emission + forge-rim applied in _build_origin_features/ironblooded.
+# Each piece is recorded in _iron_armor for cleanup and archetype scaling.
+# NEVER parents anything to arms[1] — the existing right-pauldron last-child
+# lookup in _apply_build must stay untouched.
+# ================================================================
+func _build_iron_armor() -> void:
+	# ---- LEFT PAULDRON — mirrored from the right pauldron on arms[1] ----
+	# Parent to arms[0] (left arm root). arms[0] has no existing pauldron child,
+	# so adding here does not affect the arms[1].get_child(count-1) lookup.
+	var pauldron_l := Node3D.new()
+	pauldron_l.name = "pauldron_l"
+	pauldron_l.position = Vector3(0.0, 0.03, 0.0)
+	pauldron_l.rotation.z = 0.12   # mirror of right shoulder's -0.12
+	var pl_a := _box_mesh(0.13, 0.035, 0.14, metal_mat)
+	_add_outline_pass(pl_a, Color("#6f7a88"))
+	var pl_b := _box_mesh(0.10, 0.03, 0.11, metal_mat)
+	pl_b.position.y = 0.04
+	_add_outline_pass(pl_b, Color("#6f7a88"))
+	var pl_stud := _box_mesh(0.035, 0.02, 0.035, accent_glow_mat)
+	pl_stud.position.y = 0.065
+	pauldron_l.add_child(pl_a)
+	pauldron_l.add_child(pl_b)
+	pauldron_l.add_child(pl_stud)
+	arms[0].add_child(pauldron_l)
+	_iron_armor.append({"node": pauldron_l, "base": Vector3.ONE})
+
+	# ---- CHEST PLATE — parented to spine, covers the torso ----
+	var chest := _box_mesh(0.30, 0.26, 0.16, metal_mat)
+	chest.name = "chest_plate"
+	chest.position = Vector3(0.0, 0.26, 0.04)
+	_add_outline_pass(chest, Color("#6f7a88"))
+	spine.add_child(chest)
+	_iron_armor.append({"node": chest, "base": Vector3.ONE})
+
+	# ---- GREAVES — one shin guard per leg, parented to each leg's knee pivot ----
+	for leg in legs:
+		var knee_node: Node3D = leg.get_meta("knee")
+		var greave := _box_mesh(0.12, 0.22, 0.13, metal_mat)
+		greave.name = "greave"
+		greave.position = Vector3(0.0, -0.13, 0.02)
+		_add_outline_pass(greave, Color("#6f7a88"))
+		knee_node.add_child(greave)
+		_iron_armor.append({"node": greave, "base": Vector3.ONE})
+
+	# ---- BRACERS — one forearm cuff per arm, parented to each arm's elbow pivot ----
+	for arm in arms:
+		var elbow_node: Node3D = arm.get_meta("elbow")
+		var bracer := _box_mesh(0.11, 0.14, 0.11, metal_mat)
+		bracer.name = "bracer"
+		bracer.position = Vector3(0.0, -0.12, 0.0)
+		_add_outline_pass(bracer, Color("#6f7a88"))
+		elbow_node.add_child(bracer)
+		_iron_armor.append({"node": bracer, "base": Vector3.ONE})
+
 func _build_origin_features(origin: Dictionary) -> void:
 	# ---- clean up previous origin's exclusive nodes ----
 	for child in feature_slot.get_children():
@@ -1224,6 +1293,13 @@ func _build_origin_features(origin: Dictionary) -> void:
 	if _spark_particles != null:
 		_spark_particles.queue_free()
 		_spark_particles = null
+
+	# Clean up ironblooded armor pieces (always; only re-created when ironblooded)
+	for entry in _iron_armor:
+		var n = entry.get("node")
+		if is_instance_valid(n):
+			n.queue_free()
+	_iron_armor.clear()
 
 	# Clean up miststalker fur (always; only re-created when miststalker)
 	if _fur_slot != null:
@@ -1353,6 +1429,11 @@ func _build_origin_features(origin: Dictionary) -> void:
 		metal_mat.set_shader_parameter("albedo_color", Color(0.22, 0.20, 0.20))
 		metal_mat.set_shader_parameter("emission_color", Color(1.0, 0.42, 0.10, 1.0))
 		metal_mat.set_shader_parameter("emission_strength", 1.8)
+
+		# Cel-shaded armor pieces (left pauldron, chest plate, greaves, bracers).
+		# Must be called AFTER metal_mat heat parameters are set so all pieces
+		# inherit the forge look immediately on first build.
+		_build_iron_armor()
 
 		# Sparks: forge-style GPUParticles3D near right shoulder pauldron.
 		# Amount ~30 gives continuous visible arcing without overdraw excess.

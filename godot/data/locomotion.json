@@ -14,6 +14,10 @@
   "slideThreshold": 5.0,
   "fovBase": 50.0,
   "fovKickDeg": 8.0,
+  "adsFov": 36.0,
+  "adsCamDist": 2.9,
+  "adsShoulder": 0.55,
+  "adsSensMult": 0.6,
   "landingStutterPerMeter": 0.03,
   "landingStutterMax": 0.35
 }

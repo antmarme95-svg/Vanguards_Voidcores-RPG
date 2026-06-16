@@ -84,6 +84,15 @@ var _lsm: RefCounted = null   # LocomotionStateMachine instance
 # ---- FOV baseline (used for lerp target before LSM is ready) ----
 var _fov_target: float = 50.0
 
+# ---- ADS (aim-down-sights) state ----
+var _ads_held: bool        = false
+var _cam_dist_eff: float   = CAM_DIST_DEFAULT
+var _shoulder_eff: float   = CAM_SHOULDER
+var _ads_fov: float        = 36.0
+var _ads_cam_dist: float   = 2.9
+var _ads_shoulder: float   = 0.55
+var _ads_sens_mult: float  = 0.6
+
 # ----------------------------------------------------------------
 func _ready() -> void:
 	# Capsule collider — matches rig size (height ~1.8, radius 0.32)
@@ -121,6 +130,11 @@ func _lsm_configure() -> void:
 		_fov_target = float(loco["fovBase"])
 	else:
 		_fov_target = 50.0
+	# Prime ADS tunables from loco config (fall back to built-in constants)
+	if loco.has("adsFov"):       _ads_fov        = float(loco["adsFov"])
+	if loco.has("adsCamDist"):   _ads_cam_dist   = float(loco["adsCamDist"])
+	if loco.has("adsShoulder"):  _ads_shoulder   = float(loco["adsShoulder"])
+	if loco.has("adsSensMult"):  _ads_sens_mult  = float(loco["adsSensMult"])
 
 func _get_config_node() -> Node:
 	# In-game: Config is an autoload — use get_node on the root tree.
@@ -145,9 +159,11 @@ var enabled: bool:
 	get: return _enabled
 	set(v):
 		_enabled = v
-		if not v and _mouse_captured:
-			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-			_mouse_captured = false
+		if not v:
+			_set_ads(false)
+			if _mouse_captured:
+				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+				_mouse_captured = false
 
 func recapture_mouse() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -202,6 +218,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_mouse_captured = true
 			elif _enabled:
 				try_attack()
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and _enabled and _mouse_captured:
+			_set_ads(mb.pressed)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and _enabled:
 			cam_dist = clampf(cam_dist + 0.0035 * 40.0, CAM_DIST_MIN, CAM_DIST_MAX)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP and _enabled:
@@ -209,8 +227,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	elif event is InputEventMouseMotion and _mouse_captured and _enabled:
 		var mm := event as InputEventMouseMotion
-		cam_yaw   -= mm.relative.x * 0.0052 * sens_x
-		cam_pitch  = clampf(cam_pitch + mm.relative.y * 0.0045 * sens_y, CAM_PITCH_MIN, CAM_PITCH_MAX)
+		var s: float = _ads_sens_mult if _ads_held else 1.0
+		cam_yaw   -= mm.relative.x * 0.0052 * sens_x * s
+		cam_pitch  = clampf(cam_pitch + mm.relative.y * 0.0045 * sens_y * s, CAM_PITCH_MIN, CAM_PITCH_MAX)
 
 	elif event is InputEventKey:
 		var ke := event as InputEventKey
@@ -235,6 +254,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _has_key(kc: int) -> bool:
 	return _keys_down.get(kc, false)
+
+func _set_ads(on: bool) -> void:
+	if _ads_held == on:
+		return
+	_ads_held = on
+	EventBus.emit_event("player:ads_changed", {"active": on})
 
 # ----------------------------------------------------------------
 # try_attack — JS PlayerController.tryAttack()
@@ -703,6 +728,7 @@ func update(dt: float) -> void:
 	var slide_speed:  float  = lsm_out["slide_speed"]
 	var lock_horiz:   bool   = lsm_out["lock_horizontal"]
 	_fov_target               = lsm_out["fov_target"]
+	if _ads_held: _fov_target = _ads_fov
 	var jump_vel:     float  = lsm_out["jump_velocity"]
 
 	# Update sprinting flag (for rig/passives)
@@ -798,6 +824,11 @@ var _crouch_just_pressed_this_frame: bool = false
 func _sync_camera(blend: float) -> void:
 	if cam == null:
 		return
+	# Smoothly lerp effective camera distance and shoulder offset toward ADS or normal targets.
+	var dist_goal: float     = _ads_cam_dist if _ads_held else cam_dist
+	var shoulder_goal: float = _ads_shoulder if _ads_held else CAM_SHOULDER
+	_cam_dist_eff = lerp(_cam_dist_eff, dist_goal, blend)
+	_shoulder_eff = lerp(_shoulder_eff, shoulder_goal, blend)
 	var head_y: float = 1.5 * rig.scale.y
 	var target := position + Vector3(0.0, head_y, 0.0)
 	var cp: float = cos(cam_pitch)
@@ -807,11 +838,11 @@ func _sync_camera(blend: float) -> void:
 	# AND the look target shift by `shoulder`, so the view truly pans sideways and
 	# the character ends up framed slightly left (centered crosshair = clear sight).
 	var right := Vector3(cos(cam_yaw), 0.0, -sin(cam_yaw))
-	var shoulder := right * CAM_SHOULDER
+	var shoulder := right * _shoulder_eff
 	var desired := Vector3(
-		target.x + sin(cam_yaw) * cp * cam_dist,
-		target.y + sp * cam_dist,
-		target.z + cos(cam_yaw) * cp * cam_dist
+		target.x + sin(cam_yaw) * cp * _cam_dist_eff,
+		target.y + sp * _cam_dist_eff,
+		target.z + cos(cam_yaw) * cp * _cam_dist_eff
 	) + shoulder
 	# Camera-terrain collision: march from the player toward the orbit point and
 	# pull the camera in to just before the first terrain hit, so the lens never
