@@ -40,6 +40,14 @@ var _crystal_mat: StandardMaterial3D = null
 var _legs: Array                   = []
 var _group: Node3D                 = null   # root of visual, equals self
 
+# ---- off-screen culling ----
+# VisibleOnScreenNotifier3D tracks whether any part of this beast is in the camera frustum.
+# When off-screen AND not in an active-combat state, we skip expensive per-frame
+# cosmetic work (leg scuttle, crystal pulse, hit-flash colour updates).
+# AI position/terrain-snap still runs every frame so beasts don't desync.
+var _on_screen: bool               = true   # conservative default = always process
+var _screen_notifier: VisibleOnScreenNotifier3D = null
+
 # ================================================================
 func _init(spawn_pos: Vector3, scene: Node3D) -> void:
 	_scene        = scene
@@ -51,6 +59,17 @@ func _init(spawn_pos: Vector3, scene: Node3D) -> void:
 
 func _ready() -> void:
 	_build()
+	_setup_screen_notifier()
+
+func _setup_screen_notifier() -> void:
+	# AABB covers the beast body (roughly 0.6 wide × 1.0 tall × 0.6 deep, centred at 0.5 Y).
+	# A slight margin ensures the notifier triggers slightly before the mesh becomes visible,
+	# avoiding the 1-frame cosmetic pop when the beast enters the frustum.
+	_screen_notifier = VisibleOnScreenNotifier3D.new()
+	_screen_notifier.aabb = AABB(Vector3(-0.5, 0.0, -0.5), Vector3(1.0, 1.1, 1.0))
+	add_child(_screen_notifier)
+	_screen_notifier.screen_entered.connect(func() -> void: _on_screen = true)
+	_screen_notifier.screen_exited.connect(func() -> void: _on_screen = false)
 
 func _build() -> void:
 	_group = self
@@ -210,12 +229,14 @@ func update_ai(dt: float, controller: PlayerController, passives: Passives) -> v
 	state_t += dt
 	flash_t  = maxf(0.0, flash_t - dt)
 
-	# Hit flash
+	# Hit flash — only push shader params when the flash state changes or is active.
+	# Skip the set_shader_parameter overhead every frame for roaming off-screen beasts.
 	var flash: bool = flash_t > 0.0
-	var fur_col   := Color("#ffffff") if flash else Color("#564a6b")
-	var dark_col  := Color("#ffffff") if flash else Color("#3c3450")
-	_fur_mat.set_shader_parameter("albedo_color", fur_col)
-	_dark_mat.set_shader_parameter("albedo_color", dark_col)
+	if flash or _on_screen:
+		var fur_col   := Color("#ffffff") if flash else Color("#564a6b")
+		var dark_col  := Color("#ffffff") if flash else Color("#3c3450")
+		_fur_mat.set_shader_parameter("albedo_color", fur_col)
+		_dark_mat.set_shader_parameter("albedo_color", dark_col)
 
 	var player_pos: Vector3 = controller.position
 	var to_player: Vector3  = (player_pos - position)
@@ -300,19 +321,27 @@ func update_ai(dt: float, controller: PlayerController, passives: Passives) -> v
 
 	rotation.y = facing
 
-	# Leg scuttle
-	for i in range(_legs.size()):
-		_legs[i].rotation.x = sin(_t * 11.0 + float(i) * 1.7) * 0.5 if beast_moving else 0.0
+	# ---- cosmetic-only updates: skip when off-screen and not in active combat ----
+	# "active combat" = windup/lunge/recover or aggro+chase — beast is close enough
+	# to the player that it's almost certainly on screen; safety net keeps visuals correct.
+	var in_active_combat: bool = (state == "windup" or state == "lunge" or state == "recover"
+		or (aggro and state == "chase"))
+	var do_cosmetics: bool = _on_screen or in_active_combat
 
-	# Crystal pulse
-	var pulse: float
-	if aggro:
-		pulse = 1.2 + sin(_t * 9.0) * 0.45
-	else:
-		pulse = 0.85 + sin(_t * 3.0) * 0.15
-	var cry_col := Color("#ff2336") * pulse
-	_crystal_mat.albedo_color = cry_col
-	_crystal_mat.emission     = cry_col
+	if do_cosmetics:
+		# Leg scuttle
+		for i in range(_legs.size()):
+			_legs[i].rotation.x = sin(_t * 11.0 + float(i) * 1.7) * 0.5 if beast_moving else 0.0
+
+		# Crystal pulse
+		var pulse: float
+		if aggro:
+			pulse = 1.2 + sin(_t * 9.0) * 0.45
+		else:
+			pulse = 0.85 + sin(_t * 3.0) * 0.15
+		var cry_col := Color("#ff2336") * pulse
+		_crystal_mat.albedo_color = cry_col
+		_crystal_mat.emission     = cry_col
 
 func _face_dir(dir: Vector3, dt: float, rate: float) -> void:
 	var target_y: float = atan2(dir.x, dir.z)
