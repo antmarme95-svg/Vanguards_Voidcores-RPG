@@ -1,0 +1,25 @@
+{
+  "_schemaNote": "Sub-style = Origin x Class cross product (GDD §2). Keyed [origin_id][class_id]. archetype: Vanguard=warrior/Tank, Strategist=mage/Support, Duelist=thief/DPS.",
+  "archetypes": {
+    "warrior": { "name": "Vanguard", "role": "Tank", "silhouette": "voluminous / bulky volume" },
+    "mage":    { "name": "Strategist", "role": "Support", "silhouette": "support frame" },
+    "thief":   { "name": "Duelist", "role": "DPS", "silhouette": "lean" }
+  },
+  "substyles": {
+    "aetherborn": {
+      "warrior": { "name": "Arcane Aegis", "archetype": "Vanguard", "role": "Main Tank / Anchor", "palette": "teal/blue", "mechanic": "Projects clean geometric blue-light shields to lock down lanes.", "silhouette": "Bulky tank volume with large arm/forearm shield emitters", "vfx": "Transparent geometric blue-light shield meshes — emissive fresnel + scroll pattern (overdraw-watch)" },
+      "mage": { "name": "Chrono-Weaver", "archetype": "Strategist", "role": "Utility Support", "palette": "teal/blue", "mechanic": "Controls temporal fields to slow enemies and accelerate ally cooldowns.", "silhouette": "Slim support frame with floating chrono focus orbs", "vfx": "Screen-space refraction temporal field + ground AoE decals" },
+      "thief": { "name": "Spell-Blade", "archetype": "Duelist", "role": "Projectile / Flex DPS", "palette": "teal/blue", "mechanic": "Conjures and fires high-velocity aetherial daggers from mid-range.", "silhouette": "Lean duelist with conjured dagger motes around the hands", "vfx": "Aetherial dagger projectiles + blade trails (ribbon / GPUParticles3D)" }
+    },
+    "ironblooded": {
+      "warrior": { "name": "Juggernaut", "archetype": "Vanguard", "role": "Dive / Brawl Tank", "palette": "orange/ocre", "mechanic": "Launches into the fray with steam-powered thrusters to scatter lines.", "silhouette": "Heavy bulk with back-mounted thrusters", "vfx": "Steam / thruster GPUParticles3D + orange heat glow on cannons and cracks" },
+      "mage": { "name": "Thermite-Sage", "archetype": "Strategist", "role": "Flex / Poke Support", "palette": "orange/ocre", "mechanic": "Deploys overheating napalm charges and buffs ally weapons with fire.", "silhouette": "Support frame with canister / charge launcher", "vfx": "Fire / heat emission, napalm AoE ground decals, spark particles" },
+      "thief": { "name": "Scrap-Slinger", "archetype": "Duelist", "role": "Hitscan / Marksman", "palette": "orange/ocre", "mechanic": "High-precision sniper utilizing heavily modified long-range aether rifles.", "silhouette": "Lean marksman with a long rifle silhouette", "vfx": "Muzzle flash + hitscan tracer + impact decals" }
+    },
+    "miststalker": {
+      "warrior": { "name": "Pack-Leader", "archetype": "Vanguard", "role": "Off-Tank / Utility", "palette": "terran green", "mechanic": "Mitigates damage by summoning spectral beasts; creates active stealth zones.", "silhouette": "Sturdy beastfolk with pelt/fur bulk (fake fur via shell/alpha cards)", "vfx": "Spectral beast summon VFX + stealth-zone ground decal" },
+      "mage": { "name": "Blood-Shaman", "archetype": "Strategist", "role": "Main Healer", "palette": "terran green", "mechanic": "Siphons health from enemies in a designated area and redistributes it to allies.", "silhouette": "Ritual support frame with totem / charms", "vfx": "Health-siphon AoE drain decal + heal aura particles" },
+      "thief": { "name": "Shadow-Stalker", "archetype": "Duelist", "role": "Flanker / Assassin", "palette": "terran green", "mechanic": "Pure stealth archetype featuring short-range blinks and high backstab criticals.", "silhouette": "Lean low-profile stealth, hooded/cloaked", "vfx": "Short-range blink VFX + backstab crit flash" }
+    }
+  }
+}

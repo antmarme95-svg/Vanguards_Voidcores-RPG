@@ -7,9 +7,15 @@
 # capsule CollisionShape3D is kept for future physics layers (push-back vs. walls
 # already handled by clamp_position per-scene). This matches the JS exactly and
 # is the documented deviation.
+#
+# PRD-003: locomotion is now delegated to LocomotionStateMachine (LSM).
+# The WALK/SPRINT/CROUCH consts are kept as FALLBACK values only; Config drives
+# the actual values at runtime.
 class_name PlayerController extends CharacterBody3D
 
-# ---- movement constants (JS exactly) ----
+const _LSM = preload("res://gameplay/locomotion_state_machine.gd")
+
+# ---- movement constants (JS exactly) — FALLBACK only, Config drives runtime ----
 const WALK    := 3.3
 const SPRINT  := 6.6
 const CROUCH  := 1.9
@@ -53,6 +59,15 @@ var move_speed_norm: float = 0.0
 var attack_cooldown: float = 0.0
 var projectiles: Array     = []
 
+# ---- PRD-003: locomotion state (exposed for HUD/rig) ----
+var loco_state: String = "IDLE"
+
+# ---- PRD-003: slide direction tracking ----
+var _slide_dir: Vector3 = Vector3.ZERO
+
+# ---- PRD-003: cam_yaw last-frame tracker (for cam_yaw_changed) ----
+var _last_cam_yaw: float = PI
+
 var _enabled: bool = false
 
 # ---- mouse sensitivity ----
@@ -62,6 +77,12 @@ var sens_y: float = 1.0
 # ---- input state ----
 var _keys_down: Dictionary = {}   # keyed by event physical_keycode
 var _mouse_captured: bool  = false
+
+# ---- locomotion state machine ----
+var _lsm: RefCounted = null   # LocomotionStateMachine instance
+
+# ---- FOV baseline (used for lerp target before LSM is ready) ----
+var _fov_target: float = 50.0
 
 # ----------------------------------------------------------------
 func _ready() -> void:
@@ -74,12 +95,51 @@ func _ready() -> void:
 	col.position.y = 0.9
 	add_child(col)
 
+	# Create and configure LSM.
+	# Config may not be available in headless unit-test context, so guard it.
+	_lsm = _LSM.new()
+	_lsm_configure()
+
+func _lsm_configure() -> void:
+	if _lsm == null:
+		return
+	# Config is an autoload Node — access via the scene tree if available.
+	# Falls back to built-in LSM defaults if Config is not yet ready (headless tests).
+	var loco: Dictionary = {}
+	var cmult: Dictionary = {}
+	var cfg_node = _get_config_node()
+	if cfg_node != null:
+		loco  = cfg_node.locomotion()
+		# Determine class_id from save
+		var class_id: String = ""
+		if save != null:
+			class_id = save.class_id
+		cmult = cfg_node.class_mult(class_id if class_id != "" else "warrior")
+	_lsm.configure(loco, cmult)
+	# Prime fov_target from fovBase (fallback 50.0 if not yet loaded)
+	if loco.has("fovBase"):
+		_fov_target = float(loco["fovBase"])
+	else:
+		_fov_target = 50.0
+
+func _get_config_node() -> Node:
+	# In-game: Config is an autoload — use get_node on the root tree.
+	# In headless unit tests this node won't exist; return null gracefully.
+	if get_tree() == null:
+		return null
+	var root = get_tree().root
+	if root == null:
+		return null
+	return root.get_node_or_null("/root/Config")
+
 func setup(p_rig: CharacterRig, p_stats: Stats, p_passives: Passives, p_save: SaveState, p_cam: Camera3D) -> void:
 	rig      = p_rig
 	stats    = p_stats
 	passives = p_passives
 	save     = p_save
 	cam      = p_cam
+	# Re-configure LSM now that save is set (class_id is now known).
+	_lsm_configure()
 
 var enabled: bool:
 	get: return _enabled
@@ -117,6 +177,7 @@ func set_scene(new_scene: Node3D) -> void:
 	vel_y    = 0.0
 	facing   = spawn.get("yaw", PI)
 	cam_yaw  = facing + PI
+	_last_cam_yaw = cam_yaw
 	cam_pitch = 0.3
 	rig.global_position = sp
 	rig.rotation.y      = facing
@@ -124,6 +185,9 @@ func set_scene(new_scene: Node3D) -> void:
 	# Wire alias arrays
 	interactables = new_scene.interactables if new_scene.get("interactables") != null else []
 	triggers      = new_scene.triggers      if new_scene.get("triggers")      != null else []
+
+	# Re-configure LSM with class (scene change may coincide with class selection)
+	_lsm_configure()
 
 	_sync_camera(1.0)
 
@@ -157,6 +221,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			if kc == KEY_C:
 				crouching = not crouching
+				_crouch_just_pressed_this_frame = crouching   # true only when toggling ON
 			elif kc == KEY_N:
 				passives.toggle_night_vision()
 			elif kc == KEY_F:
@@ -233,6 +298,12 @@ func _spawn_projectile(combat: Dictionary, color: Color, size: float, is_arrow: 
 	).normalized()
 	facing = atan2(fwd.x, fwd.z)
 
+	# ---- Duelist (thief) origin-specific VFX branch ----
+	# Only applies when class is thief (arrow style). Non-thief paths are unaffected.
+	if is_arrow and save != null and save.class_id == "thief":
+		_spawn_duelist_projectile(combat, fwd)
+		return
+
 	var mi := MeshInstance3D.new()
 	if is_arrow:
 		var cm := CylinderMesh.new()
@@ -258,6 +329,198 @@ func _spawn_projectile(combat: Dictionary, color: Color, size: float, is_arrow: 
 		"combat":      combat,
 		"sneak_shot":  crouching,
 	})
+
+# ----------------------------------------------------------------
+# _spawn_duelist_projectile — Duelist (thief) origin-specific attack VFX.
+# Called only when save.class_id == "thief". Branches on save.origin_id.
+# Three cells (PRD-001 §6):
+#   aetherborn  → Spell-Blade:    aetherial dagger mesh + teal GPUParticles3D trail
+#   ironblooded → Scrap-Slinger:  muzzle flash + fast tracer + impact spark flag
+#   miststalker → Shadow-Stalker: dark projectile + blink afterimage flash on player
+# ----------------------------------------------------------------
+func _spawn_duelist_projectile(combat: Dictionary, fwd: Vector3) -> void:
+	var origin: String = save.origin_id if save != null else ""
+	var spawn_pos: Vector3 = position + Vector3(0.0, 1.35, 0.0) + fwd * 0.6
+	var speed: float = float(combat.get("projectileSpeed", 26))
+	var dmg: float   = _attack_damage(combat)
+
+	match origin:
+		"aetherborn":
+			# ---- Spell-Blade: aetherial dagger + teal trail ----
+			# Dagger: elongated box mesh oriented along travel direction
+			var mi := MeshInstance3D.new()
+			var bm  := BoxMesh.new()
+			bm.size = Vector3(0.04, 0.04, 0.52)   # thin elongated blade shape
+			mi.mesh = bm
+			# Align box z-axis → forward direction
+			mi.quaternion = Quaternion(Vector3(0.0, 0.0, 1.0), fwd)
+			mi.material_override = ToonMaterials.glow_mat(Color("#00e8d8"), 2.2)  # bright teal
+			mi.position = spawn_pos
+			scene.add_child(mi)
+
+			# Teal GPUParticles3D trail parented to the projectile node
+			var trail := GPUParticles3D.new()
+			trail.emitting      = true
+			trail.amount        = 12
+			trail.lifetime      = 0.22
+			trail.explosiveness = 0.0
+			trail.randomness    = 0.15
+			trail.one_shot      = false
+			trail.local_coords  = false
+			# ProcessMaterial for trail
+			var pm := ParticleProcessMaterial.new()
+			pm.direction          = Vector3(0.0, 0.0, 0.0)
+			pm.spread             = 14.0
+			pm.initial_velocity_min = 0.4
+			pm.initial_velocity_max = 0.9
+			pm.gravity            = Vector3(0.0, -0.5, 0.0)
+			pm.scale_min          = 0.06
+			pm.scale_max          = 0.12
+			pm.color              = Color(0.0, 0.91, 0.85, 0.85)
+			# Fade out over lifetime
+			var grad := Gradient.new()
+			grad.set_color(0, Color(0.0, 0.91, 0.85, 0.85))
+			grad.set_color(1, Color(0.0, 0.5, 0.5, 0.0))
+			var gtex := GradientTexture1D.new()
+			gtex.gradient = grad
+			pm.color_ramp = gtex
+			trail.process_material = pm
+			# Draw: small sphere particle
+			var sm := SphereMesh.new()
+			sm.radius = 0.045
+			sm.height = 0.09
+			var tm_mat := ToonMaterials.glow_mat(Color("#00e8d8"), 1.6)
+			tm_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			sm.surface_set_material(0, tm_mat)
+			trail.draw_pass_1 = sm
+			mi.add_child(trail)
+
+			projectiles.append({
+				"node":       mi,
+				"vel":        fwd * speed,
+				"life":       2.4,
+				"damage":     dmg,
+				"combat":     combat,
+				"sneak_shot": crouching,
+				"vfx_tag":    "spellblade",
+			})
+
+		"ironblooded":
+			# ---- Scrap-Slinger: muzzle flash + fast tracer + impact spark flag ----
+			# (A) Muzzle flash: short-lived bright orange emissive sphere at hand/muzzle
+			var flash := MeshInstance3D.new()
+			var fsm   := SphereMesh.new()
+			fsm.radius = 0.18
+			fsm.height = 0.36
+			flash.mesh = fsm
+			flash.material_override = ToonMaterials.glow_mat(Color("#ff8c00"), 3.5)
+			flash.position = position + Vector3(0.0, 1.3, 0.0) + fwd * 0.55
+			scene.add_child(flash)
+			# Auto-free the muzzle flash after ~0.06s via a one-shot timer node
+			var flash_timer := Timer.new()
+			flash_timer.wait_time  = 0.06
+			flash_timer.one_shot   = true
+			flash_timer.autostart  = true
+			flash.add_child(flash_timer)
+			flash_timer.timeout.connect(func() -> void:
+				if is_instance_valid(flash) and flash.get_parent() != null:
+					flash.get_parent().remove_child(flash)
+					flash.queue_free()
+			)
+
+			# (B) Tracer: thin fast cylinder
+			var mi := MeshInstance3D.new()
+			var cm  := CylinderMesh.new()
+			cm.top_radius    = 0.008
+			cm.bottom_radius = 0.008
+			cm.height        = 0.80        # longer/thinner than default arrow
+			mi.mesh = cm
+			mi.quaternion = Quaternion(Vector3.UP, fwd)
+			mi.material_override = ToonMaterials.glow_mat(Color("#ffcc44"), 3.0)  # bright orange-yellow
+			mi.position = spawn_pos
+			scene.add_child(mi)
+
+			projectiles.append({
+				"node":        mi,
+				"vel":         fwd * speed * 1.45,   # faster than default
+				"life":        2.4,
+				"damage":      dmg,
+				"combat":      combat,
+				"sneak_shot":  crouching,
+				"vfx_tag":     "scrapslinger",  # signals impact spark in _update_projectiles
+			})
+
+		"miststalker":
+			# ---- Shadow-Stalker: dark projectile + player blink afterimage flash ----
+			# (A) Dark shadow projectile
+			var mi := MeshInstance3D.new()
+			var cm  := CylinderMesh.new()
+			cm.top_radius    = 0.016
+			cm.bottom_radius = 0.016
+			cm.height        = 0.48
+			mi.mesh = cm
+			mi.quaternion = Quaternion(Vector3.UP, fwd)
+			# Very dark purple/black with slight glow — reads as "shadow" against any bg
+			mi.material_override = ToonMaterials.glow_mat(Color("#220033"), 1.0)
+			mi.position = spawn_pos
+			scene.add_child(mi)
+
+			# (B) Blink afterimage flash ON THE PLAYER: a subtle low-alpha flicker —
+			#     hugs the body silhouette (radius 0.22), alpha ~0.22, gone in ~0.08s
+			#     so it reads as a quick step flicker rather than a big purple pill.
+			var blink := MeshInstance3D.new()
+			var bsm   := CapsuleMesh.new()
+			bsm.radius = 0.22   # was 0.34 — tighter body hug
+			bsm.height = 1.60   # was 1.82 — slightly shorter
+			blink.mesh = bsm
+			var blink_mat := ToonMaterials.glow_mat(Color("#6600aa"), 0.8)
+			blink_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			blink_mat.albedo_color = Color(0.4, 0.0, 0.67, 0.22)   # was 0.72 alpha
+			blink.material_override = blink_mat
+			blink.position = position + Vector3(0.0, 0.80, 0.0)
+			scene.add_child(blink)
+			# Short timer — gone in 0.08s (was 0.12s) for a fast flicker feel
+			var blink_timer := Timer.new()
+			blink_timer.wait_time = 0.08
+			blink_timer.one_shot  = true
+			blink_timer.autostart = true
+			blink.add_child(blink_timer)
+			blink_timer.timeout.connect(func() -> void:
+				if is_instance_valid(blink) and blink.get_parent() != null:
+					blink.get_parent().remove_child(blink)
+					blink.queue_free()
+			)
+
+			projectiles.append({
+				"node":       mi,
+				"vel":        fwd * speed,
+				"life":       2.4,
+				"damage":     dmg,
+				"combat":     combat,
+				"sneak_shot": crouching,
+				"vfx_tag":    "shadowstalker",
+			})
+
+		_:
+			# Unknown origin — fall back to default arrow visual (no VFX branch)
+			var mi := MeshInstance3D.new()
+			var cm  := CylinderMesh.new()
+			cm.top_radius    = 0.018
+			cm.bottom_radius = 0.018
+			cm.height        = 0.55
+			mi.mesh = cm
+			mi.quaternion = Quaternion(Vector3.UP, fwd)
+			mi.material_override = ToonMaterials.glow_mat(Color("#d8e8c8"), 1.3)
+			mi.position = spawn_pos
+			scene.add_child(mi)
+			projectiles.append({
+				"node":       mi,
+				"vel":        fwd * speed,
+				"life":       2.4,
+				"damage":     dmg,
+				"combat":     combat,
+				"sneak_shot": crouching,
+			})
 
 func _update_projectiles(dt: float) -> void:
 	for i in range(projectiles.size() - 1, -1, -1):
@@ -286,9 +549,61 @@ func _update_projectiles(dt: float) -> void:
 					kill = true
 					break
 		if kill:
+			# Scrap-Slinger: spawn impact spark at hit/death position
+			if p.get("vfx_tag", "") == "scrapslinger" and is_instance_valid(node):
+				_spawn_impact_spark(node.position)
 			if is_instance_valid(node) and node.get_parent() != null:
 				node.get_parent().remove_child(node)
 			projectiles.remove_at(i)
+
+# _spawn_impact_spark — Scrap-Slinger hit impact: bright burst GPUParticles3D
+# one-shot at impact position; auto-frees after emission completes (~0.3s).
+func _spawn_impact_spark(hit_pos: Vector3) -> void:
+	if scene == null:
+		return
+	var sparks := GPUParticles3D.new()
+	sparks.emitting      = true
+	sparks.amount        = 14
+	sparks.lifetime      = 0.28
+	sparks.explosiveness = 0.92    # burst-like
+	sparks.randomness    = 0.5
+	sparks.one_shot      = true
+	sparks.local_coords  = false
+	sparks.position      = hit_pos
+	var pm := ParticleProcessMaterial.new()
+	pm.direction             = Vector3(0.0, 1.0, 0.0)
+	pm.spread                = 85.0
+	pm.initial_velocity_min  = 2.2
+	pm.initial_velocity_max  = 5.5
+	pm.gravity               = Vector3(0.0, -9.8, 0.0)
+	pm.scale_min             = 0.05
+	pm.scale_max             = 0.13
+	var grad := Gradient.new()
+	grad.set_color(0, Color(1.0, 0.65, 0.1, 1.0))   # bright orange
+	grad.set_color(1, Color(1.0, 0.3, 0.0, 0.0))    # fade to transparent red
+	var gtex := GradientTexture1D.new()
+	gtex.gradient = grad
+	pm.color_ramp = gtex
+	sparks.process_material = pm
+	var sm := SphereMesh.new()
+	sm.radius = 0.05
+	sm.height = 0.10
+	var smat := ToonMaterials.glow_mat(Color("#ff8c00"), 2.5)
+	smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	sm.surface_set_material(0, smat)
+	sparks.draw_pass_1 = sm
+	scene.add_child(sparks)
+	# Auto-free after one-shot emission completes (lifetime + small buffer)
+	var t := Timer.new()
+	t.wait_time = 0.55
+	t.one_shot  = true
+	t.autostart = true
+	sparks.add_child(t)
+	t.timeout.connect(func() -> void:
+		if is_instance_valid(sparks) and sparks.get_parent() != null:
+			sparks.get_parent().remove_child(sparks)
+			sparks.queue_free()
+	)
 
 # ----------------------------------------------------------------
 # nearest_interactable — planar distance (JS PlayerController.nearestInteractable)
@@ -336,53 +651,122 @@ func update(dt: float) -> void:
 	var moving: bool = ix != 0.0 or iz != 0.0
 	var want_sprint: bool = _has_key(KEY_SHIFT)
 
-	sprinting = false
-	var speed: float = CROUCH if crouching else WALK
-	if moving and want_sprint and not crouching and stats.drain_stamina(15.0, dt):
-		speed    = SPRINT
-		sprinting = true
+	# ---- stamina drain for sprint (mirrors original logic) ----
+	var stamina_ok_for_sprint: bool = false
+	if moving and want_sprint and not crouching and grounded:
+		stamina_ok_for_sprint = stats.drain_stamina(15.0, dt)
 
+	# ---- detect edge inputs ----
+	var crouch_just_pressed: bool = false
+	# C key is toggled in _unhandled_input; detect the frame crouching just flipped on
+	# We track this via a shadow bool that resets each frame.
+	crouch_just_pressed = _crouch_just_pressed_this_frame
+	_crouch_just_pressed_this_frame = false
+
+	var cam_yaw_changed: bool = (cam_yaw != _last_cam_yaw)
+	_last_cam_yaw = cam_yaw
+
+	# ---- grass speed modifier ----
 	var in_grass: bool = false
 	if scene.has_method("is_in_grass"):
 		in_grass = scene.is_in_grass(position)
-	speed *= passives.grass_speed_mult(in_grass)
+	var grass_mult: float = passives.grass_speed_mult(in_grass)
 
-	if moving:
-		var len: float = sqrt(ix * ix + iz * iz)
-		ix /= len
-		iz /= len
-		var sin_y: float = sin(cam_yaw)
-		var cos_y: float = cos(cam_yaw)
-		# Camera-relative (matches JS)
-		var wx: float = iz * sin_y + ix * cos_y
-		var wz: float = iz * cos_y - ix * sin_y
-		position.x += wx * speed * dt
-		position.z += wz * speed * dt
-		var target_facing: float = atan2(wx, wz)
-		var d: float = target_facing - facing
-		while d > PI:  d -= PI * 2.0
-		while d < -PI: d += PI * 2.0
-		facing += d * minf(1.0, dt * 14.0)
+	# ---- jump edge detect: consume SPACE once per press ----
+	var jump_pressed: bool = false
+	if _enabled and grounded and _has_key(KEY_SPACE) and stats.spend_stamina(7.0):
+		jump_pressed = true
+		_keys_down.erase(KEY_SPACE)
 
-	move_speed_norm = (speed / SPRINT) if moving else 0.0
+	# ---- build LSM input ----
+	var lsm_inp: Dictionary = {
+		"moving":               moving,
+		"ix":                   ix,
+		"iz":                   iz,
+		"want_sprint":          want_sprint,
+		"crouch":               crouching,
+		"grounded":             grounded,
+		"vel_y":                vel_y,
+		"horiz_speed":          _horiz_speed,
+		"jump_pressed":         jump_pressed,
+		"stamina_ok_for_sprint": stamina_ok_for_sprint,
+		"crouch_just_pressed":  crouch_just_pressed,
+		"cam_yaw_changed":      cam_yaw_changed,
+		"position_y":           position.y,
+	}
+
+	var lsm_out: Dictionary = _lsm.tick(lsm_inp, dt)
+	loco_state = lsm_out["state"]
+	var planar_speed: float  = lsm_out["planar_speed"]
+	var air_control:  float  = lsm_out["air_control"]
+	var sliding:      bool   = lsm_out["sliding"]
+	var slide_speed:  float  = lsm_out["slide_speed"]
+	var lock_horiz:   bool   = lsm_out["lock_horizontal"]
+	_fov_target               = lsm_out["fov_target"]
+	var jump_vel:     float  = lsm_out["jump_velocity"]
+
+	# Update sprinting flag (for rig/passives)
+	sprinting = (loco_state == "SPRINT")
+
+	# Apply grass multiplier to planar speed
+	planar_speed *= grass_mult
 
 	# ---- aetherborn overclock ----
 	passives.set_overclock(_enabled and _has_key(KEY_Q), dt)
+
+	# ---- horizontal movement ----
+	if not lock_horiz:
+		if sliding:
+			# Slide: maintain the direction locked at slide entry
+			position.x += _slide_dir.x * slide_speed * dt
+			position.z += _slide_dir.z * slide_speed * dt
+		elif moving and planar_speed > 0.0:
+			var len: float = sqrt(ix * ix + iz * iz)
+			ix /= len
+			iz /= len
+			var sin_y: float = sin(cam_yaw)
+			var cos_y: float = cos(cam_yaw)
+			# Camera-relative (matches JS)
+			var wx: float = iz * sin_y + ix * cos_y
+			var wz: float = iz * cos_y - ix * sin_y
+			position.x += wx * planar_speed * air_control * dt
+			position.z += wz * planar_speed * air_control * dt
+			var target_facing: float = atan2(wx, wz)
+			var d: float = target_facing - facing
+			while d > PI:  d -= PI * 2.0
+			while d < -PI: d += PI * 2.0
+			facing += d * minf(1.0, dt * 14.0)
+
+	# Update horizontal speed tracker for next LSM tick's horiz_speed
+	_horiz_speed = Vector2(
+		(position.x - _prev_position.x) / dt if dt > 0.0 else 0.0,
+		(position.z - _prev_position.z) / dt if dt > 0.0 else 0.0
+	).length()
+	_prev_position = position
+
+	# ---- move_speed_norm for rig (normalize by SPRINT fallback) ----
+	move_speed_norm = (planar_speed / SPRINT) if (moving or sliding) else 0.0
 
 	# ---- vertical (jump + gravity, analytic terrain Y) ----
 	var ground_y: float = 0.0
 	if scene.has_method("get_height"):
 		ground_y = scene.get_height(position.x, position.z)
-	if _enabled and grounded and _has_key(KEY_SPACE) and stats.spend_stamina(7.0):
-		vel_y    = JUMP_V
+
+	if jump_vel > 0.0:
+		vel_y    = jump_vel
 		grounded = false
-		_keys_down.erase(KEY_SPACE)
 	vel_y     -= GRAVITY * dt
 	position.y += vel_y * dt
 	if position.y <= ground_y:
 		position.y = ground_y
 		vel_y      = 0.0
 		grounded   = true
+
+	# Capture slide direction on slide entry (only when we first start sliding)
+	if sliding and _slide_dir == Vector3.ZERO:
+		_slide_dir = Vector3(sin(facing), 0.0, cos(facing))
+	elif not sliding:
+		_slide_dir = Vector3.ZERO
 
 	# ---- bounds ----
 	if scene.has_method("clamp_position"):
@@ -397,6 +781,18 @@ func update(dt: float) -> void:
 	_update_projectiles(dt)
 	stats.update(dt)
 	_sync_camera(minf(1.0, dt * 7.0))
+
+	# ---- FOV kick (lerp toward target) ----
+	if cam != null:
+		cam.fov = lerp(cam.fov, _fov_target, minf(1.0, dt * 8.0))
+
+# ---- Helpers for horizontal-speed tracking (PRD-003) ----
+var _horiz_speed: float   = 0.0
+var _prev_position: Vector3 = Vector3.ZERO
+
+# ---- crouch-just-pressed edge detector ----
+# Set to true in _unhandled_input when C is pressed; cleared each update tick.
+var _crouch_just_pressed_this_frame: bool = false
 
 # ---- sync_camera (JS PlayerController.syncCamera) ----
 func _sync_camera(blend: float) -> void:

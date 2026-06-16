@@ -1,0 +1,18 @@
+{
+  "_schemaNote": "Per-class locomotion multipliers. Will be extended to the 9 sub-class matrix (Vanguard/Duelist/Strategist x3) later; same keys per cell.",
+  "warrior": {
+    "speedMult": 1.0,
+    "jumpMult": 1.0,
+    "staminaMult": 1.0
+  },
+  "mage": {
+    "speedMult": 1.0,
+    "jumpMult": 1.0,
+    "staminaMult": 1.0
+  },
+  "thief": {
+    "speedMult": 1.0,
+    "jumpMult": 1.0,
+    "staminaMult": 1.0
+  }
+}

@@ -2,6 +2,9 @@
 ## Deterministic PRNG, terrain math, core sites, grass MultiMesh, flora, sky dressing.
 class_name TheWilds extends Node3D
 
+# Preload to avoid class_name registry load-order race (same pattern as toon_materials.gd).
+const _DayNightCycle = preload("res://scenes/day_night.gd")
+
 # ---- constants (must match JS exactly) ----
 const SIZE = 220.0
 const CORE_POS = Vector2(8.0, -42.0)    # x, z
@@ -41,6 +44,12 @@ var _wind_time_param: StringName = &"wind_time"
 var _wind_mat: ShaderMaterial = null
 var _clouds: Node3D = null
 
+# ---- lighting refs (populated by _build_environment / _build_lights) ----
+var _env: Environment = null
+var _sun: DirectionalLight3D = null
+var _hemi_fill: DirectionalLight3D = null
+var _day_night: Node = null
+
 # ---- origin passed into _init ----
 var _origin: Dictionary = {}
 
@@ -58,8 +67,11 @@ func _ready() -> void:
 		_build_core_site(CORE_POS_B.x, CORE_POS_B.y, "core2"),
 	]
 	_build_sky_dressing()
+	_build_spores()
+	_build_floating_islands()
 	_build_ruins_zones()
 	_build_lights()
+	_build_day_night()
 	_setup_metadata()
 
 # ================================================================
@@ -110,12 +122,26 @@ func _build_environment() -> void:
 	# Sky background color matching fog
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color("#bfe3d4")
-	# Depth fog — begins at 55m, blue-green horizon tint for aerial perspective
+	# Depth fog — harmonized with volumetric fog color below
 	env.fog_enabled = true
 	env.fog_light_color = Color("#bfe3d4")
 	env.fog_density = 0.0015  # tuned so full at ~230
 	env.fog_aerial_perspective = 0.45
 	env.fog_sky_affect = 0.4
+	# ---- Volumetric fog — atmospheric haze + subtle sun shafts ----
+	# Modest density keeps FPS healthy; length matches view distance to distant ridges.
+	# albedo matches the distance-fog horizon color for seamless aerial perspective.
+	# No GI inject (would affect cel shading, which we must not touch).
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = 0.02          # modest: hazy depth without blocking midrange
+	env.volumetric_fog_albedo = Color("#bfe3d4")  # horizon blue-green, matches depth fog
+	env.volumetric_fog_emission = Color(0, 0, 0)  # no self-emission (keeps cores' red visible)
+	env.volumetric_fog_emission_energy = 0.0
+	env.volumetric_fog_length = 140.0          # covers out to near-ridge band (~140m)
+	env.volumetric_fog_detail_spread = 2.0     # default; Godot 4 standard value
+	env.volumetric_fog_gi_inject = 0.0         # do NOT inject GI — would alter cel shading
+	env.volumetric_fog_anisotropy = 0.2        # slight forward scattering for sun-shaft hint
+	env.volumetric_fog_ambient_inject = 0.0    # keep ambient lighting on objects unchanged
 	# Tonemap — exposure 1.0 avoids ACES boost blowing out pastels
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 1.0
@@ -140,7 +166,19 @@ func _build_environment() -> void:
 	env.set_glow_level(4, 0.0)
 	env.set_glow_level(5, 0.0)
 	env.set_glow_level(6, 0.0)
+	# ---- Far-only DOF — atmospheric perspective: distant horizon softens; near stays sharp ----
+	# dof_blur_far_distance=85: player (spawn ~88m Z) and both cores (~42-46m from origin)
+	# are well within <85m so they render SHARP. Only the 85m+ background horizon blurs.
+	# Near blur disabled — no blur on anything close to camera.
+	var cam_attr = CameraAttributesPractical.new()
+	cam_attr.dof_blur_far_enabled = true
+	cam_attr.dof_blur_far_distance = 85.0      # player + cores stay sharp (all within ~55m of origin)
+	cam_attr.dof_blur_far_transition = 30.0    # gradual transition band 85-115m
+	cam_attr.dof_blur_amount = 0.08            # subtle; pictorial softness not a blur bomb
+	cam_attr.dof_blur_near_enabled = false     # no near blur — threats must never smear
+	env.camera_attributes = cam_attr
 	we.environment = env
+	_env = env
 	add_child(we)
 
 func _build_lights() -> void:
@@ -150,6 +188,7 @@ func _build_lights() -> void:
 	hemi_fill.light_color = Color("#bfe8ff")
 	hemi_fill.light_energy = 0.18
 	hemi_fill.shadow_enabled = false
+	_hemi_fill = hemi_fill
 	add_child(hemi_fill)
 
 	# Sun — warm, PCF soft shadows to ground characters and trees
@@ -166,7 +205,19 @@ func _build_lights() -> void:
 	# Tune bias to avoid acne and peter-panning
 	sun.shadow_bias = 0.06
 	sun.shadow_normal_bias = 1.5
+	_sun = sun
 	add_child(sun)
+
+# ================================================================
+func _build_day_night() -> void:
+	# Instantiate the day/night cycle node and wire references.
+	# cycle_speed defaults to 0.0 → paused at noon → identical to baseline.
+	# sdfgi_enabled is not set here (remains false/default on the Environment).
+	_day_night = _DayNightCycle.new()
+	_day_night.env = _env
+	_day_night.sun = _sun
+	_day_night.hemi_fill = _hemi_fill
+	add_child(_day_night)
 
 # ================================================================
 func _build_terrain() -> void:
@@ -539,6 +590,22 @@ func _build_core_site(cx: float, cz: float, interactable_id: String) -> Dictiona
 	var motes_node = Props.motes(90, Color("#ff3344"), 22.0, 0.09, 7.0)
 	group.add_child(motes_node)
 
+	# ---- Local red corruption fog — FogVolume centered on the core ----
+	# Sphere radius ~16 m: hugs the scorch zone (~13 m) with a thin haze margin.
+	# density 0.4 → noticeable red pocket without going opaque at approach distance.
+	# Small red emission so the haze glows at long range even in dim conditions.
+	var fog_mat = FogMaterial.new()
+	fog_mat.albedo = Color(1.0, 0.07, 0.10, 1.0)   # vivid corruption red (#ff1219)
+	fog_mat.density = 0.5                            # bumped: reads from overhead + approach
+	fog_mat.emission = Color(0.5, 0.0, 0.03)        # brighter red self-glow for at-distance read
+
+	var fog_vol = FogVolume.new()
+	fog_vol.shape = 0                                # 0 = ELLIPSOID (sphere-like local shape)
+	fog_vol.size = Vector3(32.0, 32.0, 32.0)        # ellipsoid radii = size/2 = 16 m each axis
+	fog_vol.position = Vector3(0.0, 4.0, 0.0)       # lifted 4 m so haze sits above scorch floor
+	fog_vol.material = fog_mat
+	group.add_child(fog_vol)
+
 	add_child(group)
 
 	return {
@@ -738,65 +805,208 @@ func _build_ridge_ring(dist: float, hill_h: float, segments: int, col: Color) ->
 	return g
 
 # ================================================================
+# Ambient drifting spore/mote field — gentle floating particles above terrain
+# covering the playable area. Subtle, atmospheric backdrop.
+# ================================================================
+func _build_spores() -> void:
+	# Gentle, sparse motes drifting in the wide world around the player.
+	# Use the same style as Props.motes but with a larger spread and custom animation.
+	# ~170 pale green/white motes scattered in a wide dome above the playable terrain.
+	var spore_node = Props.motes(170, Color("#c8f0d8", 0.55), 200.0, 0.045, 8.0)
+	add_child(spore_node)
+
+# ================================================================
 func _build_sky_dressing() -> void:
-	# Sky dome
-	var dome = Props.sky_dome(Color("#3f9fe8"), Color("#bfe3d4"))
-	add_child(dome)
+		# Sky dome
+		var dome = Props.sky_dome(Color("#3f9fe8"), Color("#bfe3d4"))
+		add_child(dome)
 
-	# ---- Distant silhouette ridges — layered aerial perspective (BotW horizon) ----
-	# 3 rings of low-poly hills beyond the 102m roam boundary.
-	# Flat-shaded, progressively lighter/more desaturated blue-greens. No outlines.
-	# Ridge colors from near to far: rich blue-green → muted haze
-	var ridge_layers = [
-		{"dist": 140.0, "h": 22.0, "segments": 14, "col": Color("#5a9e7a")},  # near ridge: rich
-		{"dist": 180.0, "h": 30.0, "segments": 12, "col": Color("#7ab8a8")},  # mid ridge
-		{"dist": 230.0, "h": 38.0, "segments": 10, "col": Color("#a8cec2")},  # far haze ridge
-	]
-	for layer in ridge_layers:
-		var ridge_node = _build_ridge_ring(
-			float(layer["dist"]), float(layer["h"]),
-			int(layer["segments"]), Color(layer["col"])
-		)
-		add_child(ridge_node)
-
-	# Cloud clusters (9 clusters, seed 42)
-	_clouds = Node3D.new()
-	var state = [42]
-	var cloud_mat = StandardMaterial3D.new()
-	cloud_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	cloud_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.92)
-	cloud_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	cloud_mat.fog_enabled = false
-
-	for i in range(9):
-		var cl = Node3D.new()
-		for b in range(3):
-			var blob = MeshInstance3D.new()
-			var bmesh = SphereMesh.new()
-			var br = 5.0 + _mulberry32_next(state) * 7.0
-			bmesh.radius = br
-			bmesh.height = br * 2.0
-			blob.mesh = bmesh
-			blob.material_override = cloud_mat
-			blob.scale.y = 0.32
-			blob.position = Vector3(
-				float(b) * 7.0 - 7.0 + _mulberry32_next(state) * 4.0,
-				_mulberry32_next(state) * 2.0,
-				_mulberry32_next(state) * 5.0
+		# ---- Distant silhouette ridges — layered aerial perspective (BotW horizon) ----
+		# 3 rings of low-poly hills beyond the 102m roam boundary.
+		# Flat-shaded, progressively lighter/more desaturated blue-greens. No outlines.
+		# Ridge colors from near to far: rich blue-green → muted haze
+		var ridge_layers = [
+			{"dist": 140.0, "h": 22.0, "segments": 14, "col": Color("#5a9e7a")},  # near ridge: rich
+			{"dist": 180.0, "h": 30.0, "segments": 12, "col": Color("#7ab8a8")},  # mid ridge
+			{"dist": 230.0, "h": 38.0, "segments": 10, "col": Color("#a8cec2")},  # far haze ridge
+		]
+		for layer in ridge_layers:
+			var ridge_node = _build_ridge_ring(
+				float(layer["dist"]), float(layer["h"]),
+				int(layer["segments"]), Color(layer["col"])
 			)
-			cl.add_child(blob)
-		cl.position = Vector3(
-			-160.0 + _mulberry32_next(state) * 320.0,
-			55.0 + _mulberry32_next(state) * 28.0,
-			-160.0 + _mulberry32_next(state) * 320.0
-		)
-		cl.set_meta("cloud_speed", 0.5 + _mulberry32_next(state) * 0.7)
-		_clouds.add_child(cl)
-	add_child(_clouds)
+			add_child(ridge_node)
 
-	# Ambient motes
-	var amb_motes = Props.motes(120, Color("#9fe8ff"), 160.0, 0.1, 24.0)
-	add_child(amb_motes)
+		# Cloud clusters (9 clusters, seed 42)
+		_clouds = Node3D.new()
+		var state = [42]
+		var cloud_mat = StandardMaterial3D.new()
+		cloud_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		cloud_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.92)
+		cloud_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		cloud_mat.fog_enabled = false
+
+		for i in range(9):
+			var cl = Node3D.new()
+			for b in range(3):
+				var blob = MeshInstance3D.new()
+				var bmesh = SphereMesh.new()
+				var br = 5.0 + _mulberry32_next(state) * 7.0
+				bmesh.radius = br
+				bmesh.height = br * 2.0
+				blob.mesh = bmesh
+				blob.material_override = cloud_mat
+				blob.scale.y = 0.32
+				blob.position = Vector3(
+					float(b) * 7.0 - 7.0 + _mulberry32_next(state) * 4.0,
+					_mulberry32_next(state) * 2.0,
+					_mulberry32_next(state) * 5.0
+				)
+				cl.add_child(blob)
+			cl.position = Vector3(
+				-160.0 + _mulberry32_next(state) * 320.0,
+				55.0 + _mulberry32_next(state) * 28.0,
+				-160.0 + _mulberry32_next(state) * 320.0
+			)
+			cl.set_meta("cloud_speed", 0.5 + _mulberry32_next(state) * 0.7)
+			_clouds.add_child(cl)
+		add_child(_clouds)
+
+		# Ambient motes
+		var amb_motes = Props.motes(120, Color("#9fe8ff"), 160.0, 0.1, 24.0)
+		add_child(amb_motes)
+
+# ================================================================
+# Floating islands — distant low-detail landmasses high in the sky,
+# veiled by atmospheric/volumetric fog.  Pure backdrop, no collision.
+# Each island = inverted-cone rock body (tapering downward) +
+# flat cylinder grassy cap on top.
+# Cel-shaded via toon_mat so they stay in the OBJECT cel register.
+# Placed at horizontal dist 120–190 m (outside playable radius 102 m)
+# and height 35–75 m, spread around the compass.
+# ================================================================
+func _build_floating_islands() -> void:
+	# Materials — toon_mat for OBJECT cel register (PRD-002 §2).
+	# High ambient_lift so islands read their true hue in the sky even when most
+	# faces land in the shadow-ramp zero-band at extreme view angles.
+	# rim_power=0 (no rim — they're distant landmasses, not characters).
+	var grass_mat = ToonMaterials.toon_mat(Color("#3f9e4f"))  # grassy top
+	grass_mat.set_shader_parameter("ambient_lift", 0.55)
+	grass_mat.set_shader_parameter("rim_power", 0.0)
+	var rock_mat  = ToonMaterials.toon_mat(Color("#6f6a60"))  # rock body (warm grey)
+	rock_mat.set_shader_parameter("ambient_lift", 0.50)
+	rock_mat.set_shader_parameter("rim_power", 0.0)
+	var dark_mat  = ToonMaterials.toon_mat(Color("#4a4540"))  # underside shadow accent
+	dark_mat.set_shader_parameter("ambient_lift", 0.30)
+	dark_mat.set_shader_parameter("rim_power", 0.0)
+
+	# Per-island definitions:
+	# [angle_deg, horiz_dist, height_y, top_radius, body_height, cap_thickness]
+	# angle_deg  — compass bearing from origin (degrees, clockwise from +Z)
+	# horiz_dist — horizontal distance from origin (m), always > 102 (outside playable)
+	# height_y   — Y position of the rock body base (m above terrain zero)
+	# top_r      — radius of the grassy cap / top of rock cone (m)
+	# body_h     — height of the tapered rock cone body (m)
+	# cap_t      — thickness of the grassy cylinder cap (m)
+	var island_defs = [
+		# [ang_deg, dist,   y,    top_r, body_h, cap_t]
+		[  20.0,  135.0,  52.0,  14.0,  18.0,   3.5 ],   # NNE — large
+		[ 100.0,  155.0,  38.0,  10.0,  13.0,   2.8 ],   # ESE — medium
+		[ 175.0,  145.0,  65.0,  17.0,  22.0,   4.0 ],   # SSE — very large, highest
+		[ 245.0,  165.0,  43.0,   9.0,  11.0,   2.5 ],   # WSW — smaller
+		[ 310.0,  130.0,  58.0,  12.0,  15.0,   3.2 ],   # NW  — medium-large
+		[ 350.0,  185.0,  72.0,  20.0,  26.0,   4.5 ],   # NNW — farthest, most massive
+	]
+
+	for def in island_defs:
+		var ang_deg: float = def[0]
+		var dist: float    = def[1]
+		var base_y: float  = def[2]
+		var top_r: float   = def[3]
+		var body_h: float  = def[4]
+		var cap_t: float   = def[5]
+
+		var ang_rad = deg_to_rad(ang_deg)
+		var world_x = sin(ang_rad) * dist
+		var world_z = cos(ang_rad) * dist
+
+		var island_root = Node3D.new()
+		island_root.position = Vector3(world_x, base_y, world_z)
+
+		# ---- Rock body: downward-tapering cone (narrow at bottom) ----
+		# 7-sided for visible low-poly faceting (intentional low-detail).
+		var sides = 7
+		var top_y = body_h          # top of cone = where cap sits
+		var bot_r = top_r * 0.22   # taper to narrow point at bottom
+		var bot_y = 0.0
+
+		var st_rock = SurfaceTool.new()
+		st_rock.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+		for si in range(sides):
+			var a0 = float(si) / float(sides) * TAU
+			var a1 = float(si + 1) / float(sides) * TAU
+
+			var t0 = Vector3(cos(a0) * top_r, top_y, sin(a0) * top_r)
+			var t1 = Vector3(cos(a1) * top_r, top_y, sin(a1) * top_r)
+			var b0 = Vector3(cos(a0) * bot_r, bot_y, sin(a0) * bot_r)
+			var b1 = Vector3(cos(a1) * bot_r, bot_y, sin(a1) * bot_r)
+
+			# Side face — two triangles, flat normal
+			var n_side = ((t1 - t0).cross(b0 - t0)).normalized()
+			st_rock.set_normal(n_side); st_rock.add_vertex(t0)
+			st_rock.set_normal(n_side); st_rock.add_vertex(b0)
+			st_rock.set_normal(n_side); st_rock.add_vertex(b1)
+			st_rock.set_normal(n_side); st_rock.add_vertex(t0)
+			st_rock.set_normal(n_side); st_rock.add_vertex(b1)
+			st_rock.set_normal(n_side); st_rock.add_vertex(t1)
+
+		# Bottom tip cap
+		var bot_center = Vector3(0.0, bot_y, 0.0)
+		for si in range(sides):
+			var a0 = float(si) / float(sides) * TAU
+			var a1 = float(si + 1) / float(sides) * TAU
+			var b0 = Vector3(cos(a0) * bot_r, bot_y, sin(a0) * bot_r)
+			var b1 = Vector3(cos(a1) * bot_r, bot_y, sin(a1) * bot_r)
+			st_rock.set_normal(Vector3.DOWN); st_rock.add_vertex(bot_center)
+			st_rock.set_normal(Vector3.DOWN); st_rock.add_vertex(b1)
+			st_rock.set_normal(Vector3.DOWN); st_rock.add_vertex(b0)
+
+		var rock_mesh = st_rock.commit()
+		var rock_mi = MeshInstance3D.new()
+		rock_mi.mesh = rock_mesh
+		rock_mi.material_override = rock_mat
+		island_root.add_child(rock_mi)
+
+		# ---- Grassy cap: short flat cylinder sitting on top of rock body ----
+		var cap_mesh = CylinderMesh.new()
+		cap_mesh.top_radius    = top_r * 1.05   # slightly wider = natural overhang
+		cap_mesh.bottom_radius = top_r * 0.95
+		cap_mesh.height        = cap_t
+		cap_mesh.radial_segments = 8             # low-poly, distant
+		cap_mesh.rings         = 1
+
+		var cap_mi = MeshInstance3D.new()
+		cap_mi.mesh = cap_mesh
+		cap_mi.material_override = grass_mat
+		cap_mi.position = Vector3(0.0, top_y + cap_t * 0.5, 0.0)
+		island_root.add_child(cap_mi)
+
+		# ---- Dark underside disc — strengthens silhouette + cel depth read ----
+		var disc_mesh = CylinderMesh.new()
+		disc_mesh.top_radius    = bot_r * 3.0
+		disc_mesh.bottom_radius = 0.3
+		disc_mesh.height        = 1.0
+		disc_mesh.radial_segments = 6
+		disc_mesh.rings         = 1
+
+		var disc_mi = MeshInstance3D.new()
+		disc_mi.mesh = disc_mesh
+		disc_mi.material_override = dark_mat
+		disc_mi.position = Vector3(0.0, bot_y + 0.5, 0.0)
+		island_root.add_child(disc_mi)
+
+		add_child(island_root)
 
 # ================================================================
 func _setup_metadata() -> void:

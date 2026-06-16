@@ -5,12 +5,10 @@
 shader_type spatial;
 render_mode ambient_light_disabled;
 
-// ----- ramp band thresholds -----
-// NdotL < THRESH0 → dark band (0.0), < THRESH1 → mid-dark (0.38),
-// < THRESH2 → mid-bright (0.62), else → full bright (1.0).
-const float THRESH0 = 0.20;
-const float THRESH1 = 0.50;
-const float THRESH2 = 0.78;
+// ----- diffuse ramp texture (global pipeline resource — toon_ramp.tres) -----
+// GradientTexture1D, width=256, CONSTANT interpolation → hard 4-band stepped look.
+// filter_nearest ensures no linear blending at band edges.
+uniform sampler2D toon_ramp : source_color, hint_default_white, filter_nearest;
 
 // ----- uniforms -----
 uniform vec4 albedo_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);
@@ -59,19 +57,9 @@ void fragment() {
 }
 
 void light() {
-	// Stepped diffuse ramp — no artificial floor here.
-	float NdotL = clamp(dot(NORMAL, LIGHT), 0.0, 1.0) * ATTENUATION;
-
-	float ramp;
-	if (NdotL < THRESH0) {
-		ramp = 0.0;
-	} else if (NdotL < THRESH1) {
-		ramp = 0.38;
-	} else if (NdotL < THRESH2) {
-		ramp = 0.62;
-	} else {
-		ramp = 1.0;
-	}
-
+	// Sample the global GradientTexture1D ramp (CONSTANT interpolation → hard bands).
+	// toon_ramp encodes the same 4-band stepped diffuse as the old step function.
+	float ndl = clamp(dot(NORMAL, LIGHT), 0.0, 1.0) * ATTENUATION;
+	float ramp = texture(toon_ramp, vec2(ndl, 0.5)).r;
 	DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ramp;
 }

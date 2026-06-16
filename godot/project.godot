@@ -18,6 +18,7 @@ config/features=PackedStringArray("4.6", "Forward Plus")
 
 EventBus="*res://autoload/event_bus.gd"
 Debug="*res://autoload/debug.gd"
+Config="*res://core/config.gd"
 
 [display]
 

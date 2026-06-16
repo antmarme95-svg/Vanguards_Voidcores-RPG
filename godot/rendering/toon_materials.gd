@@ -5,6 +5,7 @@
 class_name ToonMaterials extends RefCounted
 
 const SHADER_PATH = "res://rendering/toon.gdshader"
+const _PipelineConfig = preload("res://rendering/pipeline_config.gd")
 
 # Outline cache: key = "<hex>_<thickness>" -> StandardMaterial3D
 static var _outline_cache: Dictionary = {}
@@ -23,6 +24,7 @@ static func toon_mat(color: Color) -> ShaderMaterial:
 	mat.shader = _get_shader()
 	mat.set_shader_parameter("albedo_color", color)
 	mat.set_shader_parameter("use_texture", false)
+	_PipelineConfig.apply_to(mat)
 	return mat
 
 ## Create a toon material that samples an albedo texture (head / warpaint atlas).
@@ -32,6 +34,7 @@ static func toon_mat_textured(tex: Texture2D) -> ShaderMaterial:
 	mat.set_shader_parameter("albedo_color", Color(1, 1, 1, 1))
 	mat.set_shader_parameter("use_texture", true)
 	mat.set_shader_parameter("albedo_texture", tex)
+	_PipelineConfig.apply_to(mat)
 	return mat
 
 ## Unshaded emissive glow — for aether veins, crystals, projectile trails.
@@ -59,6 +62,6 @@ static func add_outline(mat: Material, base_color: Color, thickness: float = 0.0
 		outline_pass.cull_mode = BaseMaterial3D.CULL_FRONT
 		outline_pass.grow = true
 		outline_pass.grow_amount = thickness
-		outline_pass.albedo_color = base_color.darkened(0.7)
+		outline_pass.albedo_color = base_color.darkened(_PipelineConfig.OUTLINE_DARKEN)
 		_outline_cache[key] = outline_pass
 	mat.next_pass = outline_pass

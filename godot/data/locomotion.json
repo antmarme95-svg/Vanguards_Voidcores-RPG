@@ -1,0 +1,19 @@
+{
+  "baseSpeed": 3.3,
+  "sprintMultiplier": 2.0,
+  "_sprintMultiplierNote": "Current SPRINT/WALK ratio is 2.0 (SPRINT=6.6/WALK=3.3). PRD-003 design target is 1.3 — leave 2.0 to preserve current feel; update when sprint feel is re-evaluated.",
+  "crouchSpeed": 1.9,
+  "gravity": 24.0,
+  "jumpForce": 8.4,
+  "staminaDrainRate": 15.0,
+  "jumpStaminaCost": 7.0,
+  "facingBlend": 14.0,
+  "airControl": 0.2,
+  "slideVelocity": 9.0,
+  "slideDecay": 8.0,
+  "slideThreshold": 5.0,
+  "fovBase": 50.0,
+  "fovKickDeg": 8.0,
+  "landingStutterPerMeter": 0.03,
+  "landingStutterMax": 0.35
+}

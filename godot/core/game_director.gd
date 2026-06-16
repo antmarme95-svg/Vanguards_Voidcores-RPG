@@ -143,7 +143,9 @@ func _state_creation() -> Dictionary:
 				var origin_dict: Dictionary = save.get_origin()
 				if not origin_dict.is_empty():
 					rig.apply_phenotype(save.phenotype, origin_dict)
-			creation_ui.on_class_selected = func(_cls: Dictionary) -> void: pass
+			creation_ui.on_class_selected = func(_cls: Dictionary) -> void:
+				if save.class_id != "":
+					rig.apply_archetype(save.class_id)
 			creation_ui.on_name      = func(_n: String) -> void: pass
 			creation_ui.on_confirm   = func(_name_text: String) -> void:
 				save.persist()
@@ -266,6 +268,10 @@ func _state_office() -> Dictionary:
 				controller = PlayerController.new()
 				add_child(controller)
 				controller.setup(rig, stats, passives, save, _cam)
+
+			# Apply archetype silhouette now that class is confirmed
+			if save.class_id != "":
+				rig.apply_archetype(save.class_id)
 
 			# Build scene
 			var office := RecruitmentOffice.new(origin)

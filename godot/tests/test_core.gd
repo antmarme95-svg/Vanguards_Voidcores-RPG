@@ -25,6 +25,7 @@ func _init() -> void:
 	_test_paths()
 	_test_dialogue()
 	_test_save_state()
+	_test_config()
 
 	print("")
 	if _fail_count == 0:
@@ -297,3 +298,40 @@ func _test_save_state() -> void:
 	else:
 		_fail("SaveState: persist/load round-trip (name/origin/class/path/kills)",
 			str(loaded))
+
+
+# ------------------------------------------------------------------ 9. Config
+func _test_config() -> void:
+	var cfg: Node = load("res://core/config.gd").new()
+	cfg.call("_ready")
+
+	# Test substyle accessor
+	var ss_aether_mage: Dictionary = cfg.call("substyle", "aetherborn", "mage")
+	if ss_aether_mage.get("name") == "Chrono-Weaver":
+		_pass("Config: substyle(aetherborn, mage) name==Chrono-Weaver")
+	else:
+		_fail("Config: substyle(aetherborn, mage) name==Chrono-Weaver",
+			"name=%s" % ss_aether_mage.get("name", "NOT_FOUND"))
+
+	var ss_iron_thief: Dictionary = cfg.call("substyle", "ironblooded", "thief")
+	if ss_iron_thief.get("name") == "Scrap-Slinger":
+		_pass("Config: substyle(ironblooded, thief) name==Scrap-Slinger")
+	else:
+		_fail("Config: substyle(ironblooded, thief) name==Scrap-Slinger",
+			"name=%s" % ss_iron_thief.get("name", "NOT_FOUND"))
+
+	# Test archetype accessor
+	var arch_warrior: Dictionary = cfg.call("archetype", "warrior")
+	if arch_warrior.get("name") == "Vanguard":
+		_pass("Config: archetype(warrior) name==Vanguard")
+	else:
+		_fail("Config: archetype(warrior) name==Vanguard",
+			"name=%s" % arch_warrior.get("name", "NOT_FOUND"))
+
+	# Test missing keys return empty dict
+	var missing: Dictionary = cfg.call("substyle", "unknown", "unknown")
+	if missing.is_empty():
+		_pass("Config: substyle(unknown, unknown) returns empty dict")
+	else:
+		_fail("Config: substyle(unknown, unknown) returns empty dict",
+			"returned %s" % str(missing))
