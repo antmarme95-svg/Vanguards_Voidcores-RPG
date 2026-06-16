@@ -7,7 +7,7 @@
 #
 # Usage:
 #   var lsm = _LSM.new()
-#   lsm.configure(Config.locomotion(), Config.class_mult(class_id))
+#   lsm.configure(Config.locomotion(), Config.class_mult(origin_id, class_id))
 #   var out = lsm.tick(inp, dt)
 #
 # inp keys (all required, pass sensible defaults if not applicable):
@@ -61,9 +61,16 @@ var _fov_kick:          float = 8.0
 var _landing_per_meter: float = 0.03
 var _landing_max:       float = 0.35
 
-# class multipliers
+# class multipliers — base
 var _speed_mult:  float = 1.0
 var _jump_mult:   float = 1.0
+# class multipliers — physiometry (Sprint L0)
+var _sprint_speed_mult:   float = 1.0
+var _mass_mult:           float = 1.0
+var _slide_friction:      float = 0.92
+var _air_control_pct:     float = 0.5
+var _crouch_stealth_mult: float = 0.5
+var _slide_steer_max_deg: float = 22.0
 
 # ── Derived speed tiers (recomputed on configure) ──────────────────────────────
 var _speed_run:    float = 3.3
@@ -82,7 +89,7 @@ var _was_sprinting:  bool   = false # true when last-ground-state was SPRINT
 # ── configure ──────────────────────────────────────────────────────────────────
 # Call once when the class is known.
 # loco  = Config.locomotion()
-# cmult = Config.class_mult(class_id)
+# cmult = Config.class_mult(origin_id, class_id)
 func configure(loco: Dictionary, cmult: Dictionary) -> void:
 	_base_speed        = float(loco.get("baseSpeed",        3.3))
 	_sprint_mult       = float(loco.get("sprintMultiplier", 2.0))
@@ -99,10 +106,17 @@ func configure(loco: Dictionary, cmult: Dictionary) -> void:
 
 	_speed_mult = float(cmult.get("speedMult",  1.0))
 	_jump_mult  = float(cmult.get("jumpMult",   1.0))
+	# Sprint L0: physiometry fields (stored for L1–L3 use; sprintSpeedMult + airControlPct applied now)
+	_sprint_speed_mult   = float(cmult.get("sprintSpeedMult",   1.0))
+	_mass_mult           = float(cmult.get("massMult",          1.0))
+	_slide_friction      = float(cmult.get("slideFriction",     0.92))
+	_air_control_pct     = float(cmult.get("airControlPct",     0.5))
+	_crouch_stealth_mult = float(cmult.get("crouchStealthMult", 0.5))
+	_slide_steer_max_deg = float(cmult.get("slideSteerMaxDeg",  22.0))
 
 	_speed_run    = _base_speed   * _speed_mult
-	_speed_walk   = _crouch_speed * _speed_mult
-	_speed_sprint = _base_speed * _sprint_mult * _speed_mult
+	_speed_walk   = _base_speed * _crouch_stealth_mult * _speed_mult
+	_speed_sprint = _base_speed * _sprint_mult * _speed_mult * _sprint_speed_mult
 
 
 # ── tick ───────────────────────────────────────────────────────────────────────
@@ -116,6 +130,11 @@ func tick(inp: Dictionary, dt: float) -> Dictionary:
 	var jump_pressed:        bool  = inp.get("jump_pressed",        false)
 	var stamina_ok:          bool  = inp.get("stamina_ok_for_sprint", false)
 	var crouch_just_pressed: bool  = inp.get("crouch_just_pressed", false)
+	# Sprint L3: interrupt inputs — non-interrupting defaults so old callers/tests are unaffected.
+	var attacking:    bool = inp.get("attacking",    false)
+	var ads_held:     bool = inp.get("ads_held",     false)
+	var forward_held: bool = inp.get("forward_held", true)   # default TRUE — no interrupt for existing callers
+	var interrupt:    bool = attacking or ads_held or (not forward_held)
 	# cam_yaw_changed is intentionally read but NEVER used to cancel slide.
 	# (variable kept so the caller can always pass it without error)
 	# var _cam_yaw_changed: bool = inp.get("cam_yaw_changed", false)
@@ -163,45 +182,77 @@ func tick(inp: Dictionary, dt: float) -> Dictionary:
 		_was_grounded = grounded
 		return _build_output(
 			_state,
-			horiz_speed,   # preserve momentum in air; caller scales by air_control
-			_air_control,
-			false,         # sliding
-			0.0,           # slide_speed
-			false,         # lock_horizontal
-			_fov_base,     # no FOV kick while airborne
+			horiz_speed,       # preserve momentum in air; caller scales by air_control
+			_air_control_pct,  # per-profile airborne air control (Sprint L0)
+			false,             # sliding
+			0.0,               # slide_speed
+			false,             # lock_horizontal
+			_fov_base,         # no FOV kick while airborne
 			jump_velocity,
-			true           # allow_attack
+			true               # allow_attack
 		)
 
 	# ── Ground state machine ───────────────────────────────────────────────────
 
 	# SLIDE: enter when crouch just pressed while previous state was SPRINT
-	# and horizontal speed exceeds threshold.
-	if crouch_just_pressed and (_state == STATE_SPRINT or _was_sprinting) and horiz_speed > _slide_threshold:
+	# and horizontal speed exceeds 85% of sprint max (momentum gate).
+	var slide_entering: bool = false
+	if crouch_just_pressed and (_state == STATE_SPRINT or _was_sprinting) and horiz_speed > _speed_sprint * 0.85 and not interrupt:
 		_state = STATE_SLIDE
-		_slide_speed = _slide_velocity
+		_slide_speed = clampf(horiz_speed * (1.0 + _mass_mult * 0.15), 0.0, _speed_sprint * 2.0)
+		slide_entering = true
 
 	if _state == STATE_SLIDE:
-		_slide_speed -= _slide_decay * dt
-		# Exit slide when speed drops to WALK level (or below minimum ~0.5)
-		var exit_threshold: float = maxf(_speed_walk, 0.5)
-		if _slide_speed <= exit_threshold:
+		# Sprint L3: interrupt (attacking / ADS / forward released) — exit slide immediately
+		# this same tick; fall through to the normal ground-state selection below.
+		if interrupt:
 			_state = STATE_RUN if moving else STATE_IDLE
 			_slide_speed = 0.0
+			# _state is now RUN/IDLE — the block below picks up the correct state.
 		else:
-			_was_grounded = grounded
-			_was_sprinting = false
-			return _build_output(
-				STATE_SLIDE,
-				_slide_speed,
-				1.0,   # full control of slide direction is already locked by caller
-				true,  # sliding
-				_slide_speed,
-				false, # lock_horizontal
-				_fov_base,
-				jump_pressed and false,  # no jump from slide
-				true   # allow_attack during slide
-			)
+			# Full initial momentum on the entry frame; friction only on continuation frames.
+			if not slide_entering:
+				_slide_speed *= pow(_slide_friction, dt * 60.0)
+			# Slide→Jump leap: cancel slide and launch with 90% of current slide speed.
+			if jump_pressed:
+				var launch: float = _slide_speed * 0.90
+				jump_velocity = _jump_force * _jump_mult
+				_state = STATE_JUMP
+				_fall_start_y = inp.get("position_y", 0.0)
+				_slide_speed = 0.0
+				_was_grounded = grounded
+				_was_sprinting = false
+				return _build_output(
+					STATE_JUMP,
+					launch,
+					_air_control_pct,
+					false,       # sliding
+					0.0,         # slide_speed
+					false,       # lock_horizontal
+					_fov_base,
+					jump_velocity,
+					true,        # allow_attack
+					launch       # launch_speed signals the leap to the controller
+				)
+			# Exit slide when speed drops to WALK level (or below minimum ~0.5)
+			var exit_threshold: float = maxf(_speed_walk, 0.5)
+			if _slide_speed <= exit_threshold:
+				_state = STATE_RUN if moving else STATE_IDLE
+				_slide_speed = 0.0
+			else:
+				_was_grounded = grounded
+				_was_sprinting = false
+				return _build_output(
+					STATE_SLIDE,
+					_slide_speed,
+					1.0,   # full control of slide direction is already locked by caller
+					true,  # sliding
+					_slide_speed,
+					false, # lock_horizontal
+					_fov_base,
+					0.0,   # no jump_velocity during normal slide
+					true   # allow_attack during slide
+				)
 
 	# Normal ground states
 	var new_state: String
@@ -213,7 +264,7 @@ func tick(inp: Dictionary, dt: float) -> Dictionary:
 	elif crouch:
 		new_state    = STATE_WALK
 		planar_speed = _speed_walk
-	elif want_sprint and stamina_ok:
+	elif want_sprint and stamina_ok and not interrupt:
 		new_state    = STATE_SPRINT
 		planar_speed = _speed_sprint
 	else:
@@ -249,7 +300,8 @@ func _build_output(
 		lock_horizontal: bool,
 		fov_target: float,
 		jump_velocity: float,
-		allow_attack: bool
+		allow_attack: bool,
+		launch_speed: float = 0.0
 ) -> Dictionary:
 	return {
 		"state":          state,
@@ -261,6 +313,7 @@ func _build_output(
 		"fov_target":     fov_target,
 		"jump_velocity":  jump_velocity,
 		"allow_attack":   allow_attack,
+		"launch_speed":   launch_speed,
 	}
 
 
@@ -268,5 +321,6 @@ func _build_output(
 func get_speed_run()    -> float: return _speed_run
 func get_speed_walk()   -> float: return _speed_walk
 func get_speed_sprint() -> float: return _speed_sprint
-func get_air_control()  -> float: return _air_control
+func get_air_control()  -> float: return _air_control_pct
+func get_slide_steer_max_deg() -> float: return _slide_steer_max_deg
 func get_state()        -> String: return _state
