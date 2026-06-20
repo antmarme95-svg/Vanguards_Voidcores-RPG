@@ -1653,13 +1653,16 @@ func _process(delta: float) -> void:
 	# Thighs flex forward at the hip; knees bend deeply; a gentle alternating stride
 	# keeps the crouch-walk readable. Overrides the standing gait leg pose.
 	if crouch and not _motion_slide and legs.size() >= 2 and arms.size() >= 2:
-		var stride: float = sin(_phase) * 0.16 * spd_clamped
-		legs[0].rotation.x = 0.85 + stride     # thigh flexed up/forward (hip)
-		legs[1].rotation.x = 0.85 - stride
-		legs[0].get_meta("knee").rotation.x = 1.5    # deep knee bend
-		legs[1].get_meta("knee").rotation.x = 1.5
-		arms[0].rotation.x = -0.15             # arms tucked slightly forward
-		arms[1].rotation.x = -0.15
+		var stride: float = sin(_phase) * 0.14 * spd_clamped
+		# NEGATIVE leg.rotation.x = thigh forward/up (hip flexion) — same sign the slide
+		# lead-leg uses. Knee bends just enough to drop the shin to ~vertical so the
+		# FOOT stays planted (not tucked up behind, which read as "sitting").
+		legs[0].rotation.x = -1.0 + stride     # thigh up/forward
+		legs[1].rotation.x = -1.0 - stride
+		legs[0].get_meta("knee").rotation.x = 1.2    # knee bend → shin drops down
+		legs[1].get_meta("knee").rotation.x = 1.2
+		arms[0].rotation.x = -0.2              # arms forward for balance
+		arms[1].rotation.x = -0.2
 		arms[0].get_meta("elbow").rotation.x = -0.7
 		arms[1].get_meta("elbow").rotation.x = -0.7
 
