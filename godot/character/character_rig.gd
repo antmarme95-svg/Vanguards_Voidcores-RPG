@@ -110,6 +110,8 @@ var _t: float = 0.0
 var _phase: float = 0.0
 var _motion_speed: float = 0.0
 var _motion_crouch: bool = false
+var _motion_slide: bool = false        # true while sliding — uses a dedicated low pose
+var _hip_crouch: float = 0.0           # smoothed 0..1 crouch amount for hip back+down offset
 var _attack_timer: float = 0.0
 var _attack_style: String = "melee"
 
@@ -1498,9 +1500,10 @@ func _build_origin_features(origin: Dictionary) -> void:
 # ================================================================
 
 ## Set locomotion parameters (speed 0..1, crouch bool).
-func set_motion(speed_norm: float, crouch: bool) -> void:
+func set_motion(speed_norm: float, crouch: bool, sliding: bool = false) -> void:
 	_motion_speed = speed_norm
 	_motion_crouch = crouch
+	_motion_slide = sliding
 
 ## Trigger an attack animation. kind = "melee" or "bolt".
 func play_attack(kind: String) -> void:
@@ -1512,33 +1515,113 @@ func _process(delta: float) -> void:
 	var speed: float = _motion_speed
 	var crouch: bool = _motion_crouch
 
-	# Locomotion phase advance (JS: phase += dt * (6.5 + 7.5*speed))
+	# ---- Locomotion phase advance (faster cadence at higher speed) ----
 	if speed > 0.02:
 		_phase += delta * (6.5 + 7.5 * speed)
 
-	var amp: float = min(speed, 1.0) * 0.62
-	var swing: float = sin(_phase) * amp
+	# ---- Speed-scaled stride amplitude — has a walk floor so slow walk still reads ----
+	# amp_leg:  0.0 at idle → 0.28 at min walk → 0.62 at sprint
+	# amp_arm:  follows same curve at 65% of leg
+	var spd_clamped: float = clamp(speed, 0.0, 1.0)
+	var amp_leg: float  = lerp(0.28, 0.62, spd_clamped) * spd_clamped  # zero at idle, walk floor once moving
+	# arm swing is derived inline as leg0_swing * 0.65 (contralateral, 65% of leg amplitude)
 
-	# Leg swing (JS direct port)
+	# Primary sinusoid for this frame — drives leg and arm swing
+	var sin_ph: float  = sin(_phase)         # legs[0] swing reference
+	var cos_ph: float  = cos(_phase)         # used for double-freq hip bob
+
+	# ---- Per-leg swing signals ----
+	# legs[0] (left):  forward swing when sin_ph > 0  → SWING phase positive half
+	# legs[1] (right): forward swing when sin_ph < 0  → SWING phase negative half
+	var leg0_swing: float = sin_ph * amp_leg
+	var leg1_swing: float = -sin_ph * amp_leg
+
+	# ---- Knee flex amplitude — floor ensures visible bend even at walk speed ----
+	# Peak knee flex: ~0.60 rad (~34°) at sprint, ~0.38 rad (~22°) at slow walk
+	var knee_peak: float    = lerp(0.38, 0.62, spd_clamped)
+	# Soft baseline bend: ~0.10 rad (~6°) standing so knees are never locked-straight rods.
+	# Crouch adds a strong baseline flex (~0.85 rad / ~49°) for a pronounced acute-angle stance.
+	var knee_base: float    = 0.10 + (0.85 if crouch else 0.0)
+
+	# Knee flex phase: knee flexes during SWING (foot off ground, swinging forward).
+	# Offset by +0.15 rad so peak flex follows slightly after the leg begins its forward arc.
+	# max(0, ...) keeps flex positive (natural backward bend only, never hyperextend).
+	# legs[0] swings when sin_ph > 0, so knee0 flexes on positive half:
+	var knee0_flex: float = knee_base + max(0.0, sin(_phase + 0.15)) * knee_peak * spd_clamped
+	# legs[1] swings when sin_ph < 0, so knee1 flexes on negative half (invert):
+	var knee1_flex: float = knee_base + max(0.0, sin(_phase + 0.15 + PI)) * knee_peak * spd_clamped
+
+	# ---- Elbow flex — baseline bend + swing-coupled pump ----
+	# Baseline ~0.30 rad (~17°) so elbows are never rod-straight.
+	# Pump amplitude scales with speed.  Elbow flexes on the FORWARD swing of its arm.
+	# arms[0] swings forward when sin_ph < 0 (contralateral to leg0).
+	# arms[1] swings forward when sin_ph > 0.
+	var elbow_base: float   = 0.30
+	var elbow_pump: float   = lerp(0.15, 0.55, spd_clamped) * spd_clamped
+	var e0_flex: float = elbow_base + max(0.0, -sin(_phase + 0.1)) * elbow_pump
+	var e1_flex: float = elbow_base + max(0.0,  sin(_phase + 0.1)) * elbow_pump
+
+	# ---- Apply legs ----
 	if legs.size() >= 2:
-		legs[0].rotation.x = swing
-		legs[1].rotation.x = -swing
+		# Idle settle: lerp toward neutral when speed is near zero to avoid stiff snap
+		if speed > 0.02:
+			legs[0].rotation.x = leg0_swing
+			legs[1].rotation.x = leg1_swing
+		else:
+			legs[0].rotation.x = lerp(legs[0].rotation.x, 0.0, min(1.0, delta * 8.0))
+			legs[1].rotation.x = lerp(legs[1].rotation.x, 0.0, min(1.0, delta * 8.0))
+
 		var knee0: Node3D = legs[0].get_meta("knee")
 		var knee1: Node3D = legs[1].get_meta("knee")
-		knee0.rotation.x = max(0.0, -sin(_phase)) * amp * 1.1
-		knee1.rotation.x = max(0.0, sin(_phase)) * amp * 1.1
+		if speed > 0.02:
+			knee0.rotation.x = knee0_flex
+			knee1.rotation.x = knee1_flex
+		else:
+			# Idle: settle to soft baseline bend (never fully locked straight)
+			knee0.rotation.x = lerp(knee0.rotation.x, knee_base, min(1.0, delta * 8.0))
+			knee1.rotation.x = lerp(knee1.rotation.x, knee_base, min(1.0, delta * 8.0))
 
-	# Arm swing (JS: armSwing = swing * 0.75)
-	var arm_swing: float = swing * 0.75
+	# ---- Subtle hip bob (double-frequency: two dips per stride cycle) ----
+	# Bob the hips node so it stays additive with the body.position.y crouch lerp.
+	# Amplitude: 0.0 at idle, up to 0.022 at sprint.
+	var hip_bob: float = -abs(cos_ph) * 0.022 * spd_clamped
+	# Crouch hips offset: pull the hips BACK 0.2m (local -Z) and DOWN 0.2m for a
+	# low, hinged stealth stance. Smoothed via _hip_crouch (0..1).
+	_hip_crouch = lerp(_hip_crouch, 1.0 if crouch else 0.0, min(1.0, delta * 10.0))
+	hips.position.y = 0.95 + hip_bob - 0.10 * _hip_crouch   # 0.95 base; bob additive; small crouch drop
+	hips.position.z = -0.12 * _hip_crouch                   # hips slightly back; joints do the rest
+
+	# ---- Subtle spine counter-rotation (torso twist opposing arms for life) ----
+	# Small y-rotation opposing arm swing: amplitude up to 0.06 rad at sprint.
+	var spine_twist: float = -sin_ph * 0.06 * spd_clamped
+	spine.rotation.y = lerp(spine.rotation.y, spine_twist, min(1.0, delta * 12.0))
+
+	# ---- Apply arms (skipped when attack envelope is active) ----
 	if _attack_timer <= 0.0 and arms.size() >= 2:
-		arms[0].rotation.x = -arm_swing
-		arms[1].rotation.x = arm_swing
+		# Contralateral swing: left arm back when left leg forward
+		var a0_swing: float = -leg0_swing * 0.65  # arm[0] opposite to leg[0]
+		var a1_swing: float = -leg1_swing * 0.65  # arm[1] opposite to leg[1]
+		if speed > 0.02:
+			arms[0].rotation.x = a0_swing
+			arms[1].rotation.x = a1_swing
+		else:
+			arms[0].rotation.x = lerp(arms[0].rotation.x, 0.0, min(1.0, delta * 8.0))
+			arms[1].rotation.x = lerp(arms[1].rotation.x, 0.0, min(1.0, delta * 8.0))
+
+		# Slight outward splay so arms don't clip torso
 		arms[0].rotation.z = 0.1
 		arms[1].rotation.z = -0.1
+
 		var e0: Node3D = arms[0].get_meta("elbow")
 		var e1: Node3D = arms[1].get_meta("elbow")
-		e0.rotation.x = -0.25 - max(0.0, arm_swing) * 0.6
-		e1.rotation.x = -0.25 - max(0.0, -arm_swing) * 0.6
+		# Elbow rotation.x is negative to flex the forearm upward/inward (anatomical)
+		if speed > 0.02:
+			e0.rotation.x = -e0_flex
+			e1.rotation.x = -e1_flex
+		else:
+			# Idle settle: relax toward the baseline bend
+			e0.rotation.x = lerp(e0.rotation.x, -elbow_base, min(1.0, delta * 8.0))
+			e1.rotation.x = lerp(e1.rotation.x, -elbow_base, min(1.0, delta * 8.0))
 
 	# Attack envelope (JS: wind-up then snap)
 	if _attack_timer > 0.0:
@@ -1560,18 +1643,52 @@ func _process(delta: float) -> void:
 				arms[1].rotation.z = -0.35
 				arms[1].get_meta("elbow").rotation.x = -0.15
 
-	# Crouch / breathe (JS: body.position.y lerp toward crouchY, spine.rotation.x lerp)
-	var crouch_y: float = -0.17 if crouch else 0.0
+	# Crouch / breathe — body drop + forward trunk incline (squat trunk angle).
+	var crouch_y: float = -0.35 if crouch else 0.0
 	body.position.y += (crouch_y - body.position.y) * min(1.0, delta * 10.0)
-	var lean: float = 0.24 if crouch else 0.0
+	var lean: float = 0.5 if crouch else 0.0
 	spine.rotation.x += (lean - spine.rotation.x) * min(1.0, delta * 10.0)
+
+	# ── CROUCH SQUAT pose: deep HIP + KNEE flexion (matches squat reference) ──
+	# Thighs flex forward at the hip; knees bend deeply; a gentle alternating stride
+	# keeps the crouch-walk readable. Overrides the standing gait leg pose.
+	if crouch and not _motion_slide and legs.size() >= 2 and arms.size() >= 2:
+		var stride: float = sin(_phase) * 0.16 * spd_clamped
+		legs[0].rotation.x = 0.85 + stride     # thigh flexed up/forward (hip)
+		legs[1].rotation.x = 0.85 - stride
+		legs[0].get_meta("knee").rotation.x = 1.5    # deep knee bend
+		legs[1].get_meta("knee").rotation.x = 1.5
+		arms[0].rotation.x = -0.15             # arms tucked slightly forward
+		arms[1].rotation.x = -0.15
+		arms[0].get_meta("elbow").rotation.x = -0.7
+		arms[1].get_meta("elbow").rotation.x = -0.7
+
+	# ── SLIDE: dedicated low committed pose (overrides crouch/gait when sliding) ──
+	# Deep body drop, strong forward lean, lead leg extended, trail leg tucked,
+	# arms swept back for balance — reads clearly as a power slide.
+	if _motion_slide and legs.size() >= 2 and arms.size() >= 2:
+		var sb: float = min(1.0, delta * 14.0)
+		body.position.y  += (-0.50 - body.position.y) * sb
+		spine.rotation.x += (0.55 - spine.rotation.x) * sb
+		hips.position.z   = 0.0              # body handles the drop, not the hips
+		hips.position.y   = 0.95 + hip_bob   # cancel the crouch hip drop while sliding
+		legs[0].rotation.x = -0.62           # lead leg extended forward
+		legs[1].rotation.x = 0.55            # trail leg back
+		legs[0].get_meta("knee").rotation.x = 0.15   # lead nearly straight
+		legs[1].get_meta("knee").rotation.x = 1.05   # trail tucked under
+		arms[0].rotation.x = 0.45            # arms swept back
+		arms[1].rotation.x = 0.45
+		arms[0].rotation.z = 0.18
+		arms[1].rotation.z = -0.18
+		arms[0].get_meta("elbow").rotation.x = -0.55
+		arms[1].get_meta("elbow").rotation.x = -0.55
 
 	# Idle breathe (JS: torso.scale.y = 1 + sin(t*2.1)*0.012)
 	torso.scale.y = 1.0 + sin(_t * 2.1) * 0.012
 
 	# Beast tail sway (JS: tailSlot.rotation.y = sin(t*1.7)*0.25 + swing*0.3)
 	if tail_slot.get_child_count() > 0:
-		tail_slot.rotation.y = sin(_t * 1.7) * 0.25 + swing * 0.3
+		tail_slot.rotation.y = sin(_t * 1.7) * 0.25 + leg0_swing * 0.3
 
 	# ---- Vanguard per-origin animations ----
 	if _archetype_class == "warrior":

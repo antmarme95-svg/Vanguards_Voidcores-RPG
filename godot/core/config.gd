@@ -4,8 +4,8 @@
 # use built-in defaults so the game never crashes.
 #
 # Usage (once registered as autoload "Config"):
-#   Config.locomotion()               -> Dictionary  (all locomotion keys)
-#   Config.class_mult("warrior")      -> Dictionary  (speedMult/jumpMult/staminaMult)
+#   Config.locomotion()                          -> Dictionary  (all locomotion keys)
+#   Config.class_mult(origin_id, class_id)       -> Dictionary  (9-field physiometry profile)
 
 extends Node
 
@@ -30,9 +30,15 @@ const _LOCO_DEFAULTS := {
 }
 
 const _CLASS_MULT_DEFAULT := {
-	"speedMult":   1.0,
-	"jumpMult":    1.0,
-	"staminaMult": 1.0,
+	"speedMult":         1.0,
+	"sprintSpeedMult":   1.0,
+	"jumpMult":          1.0,
+	"massMult":          1.0,
+	"slideFriction":     0.92,
+	"airControlPct":     0.50,
+	"crouchStealthMult": 0.50,
+	"slideSteerMaxDeg":  22,
+	"staminaMult":       1.0,
 }
 
 # ── internal state ─────────────────────────────────────────────────────────────
@@ -55,12 +61,35 @@ func locomotion() -> Dictionary:
 	return _loco
 
 
-## Returns per-class multipliers for class_id, or the neutral default if unknown.
-func class_mult(class_id: String) -> Dictionary:
-	if _class_mult.has(class_id):
-		return _class_mult[class_id]
-	push_warning("Config.class_mult: unknown class_id '%s', returning defaults" % class_id)
-	return _CLASS_MULT_DEFAULT.duplicate()
+## Returns per-subclass physiometry profile for (origin_id, class_id).
+## 3-level fallback: built-in defaults → archetype_defaults[class_id] → origin[class_id].
+## Always returns a dict containing all 9 fields. Never crashes on unknown keys.
+func class_mult(origin_id: String, class_id: String) -> Dictionary:
+	var result: Dictionary = _CLASS_MULT_DEFAULT.duplicate(true)
+
+	# Level 1: merge archetype_defaults[class_id] over built-in defaults
+	if _class_mult.has("archetype_defaults"):
+		var arch_defaults: Variant = _class_mult["archetype_defaults"]
+		if arch_defaults is Dictionary and arch_defaults.has(class_id):
+			var arch_cell: Variant = arch_defaults[class_id]
+			if arch_cell is Dictionary:
+				for k in arch_cell:
+					result[k] = arch_cell[k]
+
+	# Level 2: merge origin-specific subclass cell over the above
+	if _class_mult.has(origin_id):
+		var origin_dict: Variant = _class_mult[origin_id]
+		if origin_dict is Dictionary and origin_dict.has(class_id):
+			var sub_cell: Variant = origin_dict[class_id]
+			if sub_cell is Dictionary:
+				for k in sub_cell:
+					result[k] = sub_cell[k]
+		else:
+			push_warning("Config.class_mult: no cell for origin='%s' class='%s', using archetype defaults" % [origin_id, class_id])
+	else:
+		push_warning("Config.class_mult: unknown origin_id='%s', using archetype/built-in defaults" % origin_id)
+
+	return result
 
 
 ## Returns the substyle dictionary for (origin_id, class_id), or {} if not found.
@@ -115,17 +144,16 @@ func _load_class_mult() -> Dictionary:
 	var result: Dictionary = {}
 	const PATH := "res://data/class_multipliers.json"
 	var parsed: Variant = _parse_json_file(PATH)
-	if parsed != null and parsed is Dictionary:
-		for class_id in parsed:
-			# Skip metadata / note keys (start with "_")
-			if class_id.begins_with("_"):
-				continue
-			var entry: Variant = parsed[class_id]
-			if entry is Dictionary:
-				var merged: Dictionary = _CLASS_MULT_DEFAULT.duplicate(true)
-				for k in entry:
-					merged[k] = entry[k]
-				result[class_id] = merged
+	if parsed == null or not parsed is Dictionary:
+		# Parse failed — leave result empty; class_mult() falls back to built-in defaults.
+		return result
+	for top_key in parsed:
+		# Skip metadata keys (beginning with "_")
+		if (top_key as String).begins_with("_"):
+			continue
+		var entry: Variant = parsed[top_key]
+		if entry is Dictionary:
+			result[top_key] = entry
 	return result
 
 

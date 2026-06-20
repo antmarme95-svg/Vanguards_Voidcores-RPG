@@ -335,3 +335,46 @@ func _test_config() -> void:
 	else:
 		_fail("Config: substyle(unknown, unknown) returns empty dict",
 			"returned %s" % str(missing))
+
+	# ── class_mult nested accessor (Sprint L0) ─────────────────────────────────
+	# ironblooded+warrior → HEAVY tier: massMult==1.5, sprintSpeedMult==0.85
+	var cm_iw: Dictionary = cfg.call("class_mult", "ironblooded", "warrior")
+	if absf(float(cm_iw.get("massMult", 0.0)) - 1.5) < 0.001:
+		_pass("Config: class_mult(ironblooded, warrior) massMult==1.5")
+	else:
+		_fail("Config: class_mult(ironblooded, warrior) massMult==1.5",
+			"massMult=%s" % str(cm_iw.get("massMult", "NOT_FOUND")))
+	if absf(float(cm_iw.get("sprintSpeedMult", 0.0)) - 0.85) < 0.001:
+		_pass("Config: class_mult(ironblooded, warrior) sprintSpeedMult==0.85")
+	else:
+		_fail("Config: class_mult(ironblooded, warrior) sprintSpeedMult==0.85",
+			"sprintSpeedMult=%s" % str(cm_iw.get("sprintSpeedMult", "NOT_FOUND")))
+
+	# miststalker+thief → LIGHT tier: airControlPct==0.75, slideSteerMaxDeg==45
+	var cm_mt: Dictionary = cfg.call("class_mult", "miststalker", "thief")
+	if absf(float(cm_mt.get("airControlPct", 0.0)) - 0.75) < 0.001:
+		_pass("Config: class_mult(miststalker, thief) airControlPct==0.75")
+	else:
+		_fail("Config: class_mult(miststalker, thief) airControlPct==0.75",
+			"airControlPct=%s" % str(cm_mt.get("airControlPct", "NOT_FOUND")))
+	if absf(float(cm_mt.get("slideSteerMaxDeg", 0.0)) - 45.0) < 0.001:
+		_pass("Config: class_mult(miststalker, thief) slideSteerMaxDeg==45")
+	else:
+		_fail("Config: class_mult(miststalker, thief) slideSteerMaxDeg==45",
+			"slideSteerMaxDeg=%s" % str(cm_mt.get("slideSteerMaxDeg", "NOT_FOUND")))
+
+	# aetherborn+mage → BALANCED tier: slideFriction==0.95 (softened for longer slides)
+	var cm_am: Dictionary = cfg.call("class_mult", "aetherborn", "mage")
+	if absf(float(cm_am.get("slideFriction", 0.0)) - 0.95) < 0.001:
+		_pass("Config: class_mult(aetherborn, mage) slideFriction==0.95")
+	else:
+		_fail("Config: class_mult(aetherborn, mage) slideFriction==0.95",
+			"slideFriction=%s" % str(cm_am.get("slideFriction", "NOT_FOUND")))
+
+	# unknown+unknown → graceful fallback: dict contains all 9 fields
+	var cm_unk: Dictionary = cfg.call("class_mult", "unknown", "unknown")
+	if cm_unk.has("massMult") and cm_unk.has("airControlPct"):
+		_pass("Config: class_mult(unknown, unknown) fallback has massMult and airControlPct")
+	else:
+		_fail("Config: class_mult(unknown, unknown) fallback has massMult and airControlPct",
+			"keys=%s" % str(cm_unk.keys()))

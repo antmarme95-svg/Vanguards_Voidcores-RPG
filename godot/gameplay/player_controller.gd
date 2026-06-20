@@ -63,7 +63,14 @@ var projectiles: Array     = []
 var loco_state: String = "IDLE"
 
 # ---- PRD-003: slide direction tracking ----
-var _slide_dir: Vector3 = Vector3.ZERO
+var _slide_dir: Vector3       = Vector3.ZERO
+var _slide_entry_dir: Vector3 = Vector3.ZERO
+var _was_sliding: bool        = false   # edge-detect slide end (auto-stand from crouch toggle)
+
+# ---- Sprint L2: leap (slide→jump) state ----
+var _air_vel: Vector3  = Vector3.ZERO   # horizontal velocity carried from leap launch
+var _leaping: bool     = false          # true while airborne from a slide→jump leap
+var _cam_thump: float  = 0.0           # camera thump timer for landing feel (seconds)
 
 # ---- PRD-003: cam_yaw last-frame tracker (for cam_yaw_changed) ----
 var _last_cam_yaw: float = PI
@@ -86,6 +93,8 @@ var _fov_target: float = 50.0
 
 # ---- ADS (aim-down-sights) state ----
 var _ads_held: bool        = false
+# ---- Sprint L3: attack interrupt pulse ----
+var _attack_pulse: float   = 0.0
 var _cam_dist_eff: float   = CAM_DIST_DEFAULT
 var _shoulder_eff: float   = CAM_SHOULDER
 var _ads_fov: float        = 36.0
@@ -119,11 +128,13 @@ func _lsm_configure() -> void:
 	var cfg_node = _get_config_node()
 	if cfg_node != null:
 		loco  = cfg_node.locomotion()
-		# Determine class_id from save
-		var class_id: String = ""
-		if save != null:
-			class_id = save.class_id
-		cmult = cfg_node.class_mult(class_id if class_id != "" else "warrior")
+		# Determine origin_id and class_id from save
+		var origin_id: String = save.origin_id if save != null else ""
+		var class_id: String  = save.class_id  if save != null else ""
+		cmult = cfg_node.class_mult(
+			origin_id if origin_id != "" else "aetherborn",
+			class_id  if class_id  != "" else "warrior"
+		)
 	_lsm.configure(loco, cmult)
 	# Prime fov_target from fovBase (fallback 50.0 if not yet loaded)
 	if loco.has("fovBase"):
@@ -240,7 +251,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			if kc == KEY_C:
 				crouching = not crouching
-				_crouch_just_pressed_this_frame = crouching   # true only when toggling ON
+				_crouch_just_pressed_this_frame = true   # slide-intent edge — fires on every C press (toggle-direction agnostic)
 			elif kc == KEY_N:
 				passives.toggle_night_vision()
 			elif kc == KEY_F:
@@ -278,18 +289,21 @@ func try_attack() -> void:
 		if not stats.spend_magicka(float(combat.get("magickaCost", 14))):
 			return
 		attack_cooldown = float(combat.get("cooldown", 0.55)) * passives.cast_cooldown_mult()
+		_attack_pulse = 0.12   # Sprint L3: briefly interrupt sprint/slide
 		rig.play_attack("bolt")
 		_spawn_projectile(combat, Color("#7adfff"), 0.13, false)
 	elif style == "arrow":
 		if not stats.spend_stamina(float(combat.get("staminaCost", 8))):
 			return
 		attack_cooldown = float(combat.get("cooldown", 0.45))
+		_attack_pulse = 0.12   # Sprint L3: briefly interrupt sprint/slide
 		rig.play_attack("melee")
 		_spawn_projectile(combat, Color("#d8e8c8"), 0.05, true)
 	else:  # melee
 		if not stats.spend_stamina(float(combat.get("staminaCost", 12))):
 			return
 		attack_cooldown = float(combat.get("cooldown", 0.65)) * passives.attack_cooldown_mult()
+		_attack_pulse = 0.12   # Sprint L3: briefly interrupt sprint/slide
 		rig.play_attack("melee")
 		_melee_hit(combat)
 
@@ -664,6 +678,7 @@ func update(dt: float) -> void:
 	if scene == null:
 		return
 	attack_cooldown = maxf(0.0, attack_cooldown - dt)
+	_attack_pulse   = maxf(0.0, _attack_pulse - dt)   # Sprint L3: decay attack interrupt pulse
 
 	# ---- planar input ----
 	var ix: float = 0.0
@@ -676,10 +691,13 @@ func update(dt: float) -> void:
 	var moving: bool = ix != 0.0 or iz != 0.0
 	var want_sprint: bool = _has_key(KEY_SHIFT)
 
-	# ---- stamina drain for sprint (mirrors original logic) ----
+	# ---- stamina drain for sprint ----
+	# NOTE: sprint intent (Shift) must win even while the crouch toggle is on, otherwise
+	# a crouched player can never sprint → never slide. The FSM gives SPRINT priority over
+	# crouch when stamina_ok, so we must grant stamina here regardless of `crouching`.
 	var stamina_ok_for_sprint: bool = false
-	if moving and want_sprint and not crouching and grounded:
-		stamina_ok_for_sprint = stats.drain_stamina(15.0, dt)
+	if moving and want_sprint and grounded:
+		stamina_ok_for_sprint = stats.drain_stamina(8.0, dt)   # ~15s sprint on a 120 pool
 
 	# ---- detect edge inputs ----
 	var crouch_just_pressed: bool = false
@@ -699,9 +717,12 @@ func update(dt: float) -> void:
 
 	# ---- jump edge detect: consume SPACE once per press ----
 	var jump_pressed: bool = false
-	if _enabled and grounded and _has_key(KEY_SPACE) and stats.spend_stamina(7.0):
+	if _enabled and grounded and _has_key(KEY_SPACE) and stats.spend_stamina(4.0):
 		jump_pressed = true
 		_keys_down.erase(KEY_SPACE)
+
+	# ---- Sprint L3: interrupt flags ----
+	var forward_held: bool = _has_key(KEY_W) or _has_key(KEY_UP)
 
 	# ---- build LSM input ----
 	var lsm_inp: Dictionary = {
@@ -718,6 +739,9 @@ func update(dt: float) -> void:
 		"crouch_just_pressed":  crouch_just_pressed,
 		"cam_yaw_changed":      cam_yaw_changed,
 		"position_y":           position.y,
+		"attacking":            _attack_pulse > 0.0,
+		"ads_held":             _ads_held,
+		"forward_held":         forward_held,
 	}
 
 	var lsm_out: Dictionary = _lsm.tick(lsm_inp, dt)
@@ -730,6 +754,15 @@ func update(dt: float) -> void:
 	_fov_target               = lsm_out["fov_target"]
 	if _ads_held: _fov_target = _ads_fov
 	var jump_vel:     float  = lsm_out["jump_velocity"]
+	var launch_speed: float  = lsm_out.get("launch_speed", 0.0)
+
+	# Sprint L2: detect leap launch (slide→jump) — carry horizontal momentum as air velocity.
+	if launch_speed > 0.0:
+		# _slide_dir holds the slide direction at the time of jump (cleared a few lines below).
+		# Use the current slide dir if set; fall back to facing direction.
+		var leap_dir: Vector3 = _slide_dir if _slide_dir.length_squared() > 0.001 else Vector3(sin(facing), 0.0, cos(facing))
+		_air_vel = leap_dir * launch_speed
+		_leaping = true
 
 	# Update sprinting flag (for rig/passives)
 	sprinting = (loco_state == "SPRINT")
@@ -743,10 +776,58 @@ func update(dt: float) -> void:
 	# ---- horizontal movement ----
 	if not lock_horiz:
 		if sliding:
-			# Slide: maintain the direction locked at slide entry
+			# Slide: maintain locked direction, steer within cap for Light subclasses.
+			var max_deg: float = _lsm.get_slide_steer_max_deg()
+			if max_deg > 0.001 and (ix != 0.0 or iz != 0.0):
+				# Compute desired world direction from input (same formula as normal movement).
+				var len: float = sqrt(ix * ix + iz * iz)
+				var nix: float = ix / len
+				var niz: float = iz / len
+				var sin_y: float = sin(cam_yaw)
+				var cos_y: float = cos(cam_yaw)
+				var wx: float = niz * sin_y + nix * cos_y
+				var wz: float = niz * cos_y - nix * sin_y
+				var desired: Vector3 = Vector3(wx, 0.0, wz).normalized()
+				# Work in angles (atan2(x,z) matches Vector3(sin(a),0,cos(a)) convention).
+				var max_rad: float = deg_to_rad(max_deg)
+				var entry_a: float = atan2(_slide_entry_dir.x, _slide_entry_dir.z)
+				var cur_a:   float = atan2(_slide_dir.x, _slide_dir.z)
+				var des_a:   float = atan2(desired.x, desired.z)
+				# Clamp desired to within ±max_rad of entry angle.
+				var off: float = wrapf(des_a - entry_a, -PI, PI)
+				off = clampf(off, -max_rad, max_rad)
+				var target_a: float = entry_a + off
+				# Smooth rotate cur_a toward target_a at 120°/s.
+				var step: float = deg_to_rad(120.0) * dt
+				var da: float = wrapf(target_a - cur_a, -PI, PI)
+				cur_a += clampf(da, -step, step)
+				_slide_dir = Vector3(sin(cur_a), 0.0, cos(cur_a))
+				# Rig turns into the slide direction.
+				facing = cur_a
 			position.x += _slide_dir.x * slide_speed * dt
 			position.z += _slide_dir.z * slide_speed * dt
-		elif moving and planar_speed > 0.0:
+		elif _leaping and not grounded:
+			# Sprint L2: leap air-movement — integrate carried horizontal velocity,
+			# with input-steered blending scaled by the profile's air control.
+			if ix != 0.0 or iz != 0.0:
+				var len: float = sqrt(ix * ix + iz * iz)
+				var nix: float = ix / len
+				var niz: float = iz / len
+				var sin_y: float = sin(cam_yaw)
+				var cos_y: float = cos(cam_yaw)
+				var wx: float = niz * sin_y + nix * cos_y
+				var wz: float = niz * cos_y - nix * sin_y
+				var desired: Vector3 = Vector3(wx, 0.0, wz).normalized()
+				# Blend _air_vel toward desired direction at a rate scaled by air_control.
+				# Light (0.75) → responsive sweep; Heavy (0.20) → mostly committed vault.
+				var blend: float = clampf(air_control * dt * 3.0, 0.0, 1.0)
+				_air_vel = _air_vel.lerp(desired * _air_vel.length(), blend)
+			# Turn facing into air velocity direction.
+			if _air_vel.length_squared() > 0.001:
+				facing = atan2(_air_vel.x, _air_vel.z)
+			position.x += _air_vel.x * dt
+			position.z += _air_vel.z * dt
+		elif moving and planar_speed > 0.0 and not _leaping:
 			var len: float = sqrt(ix * ix + iz * iz)
 			ix /= len
 			iz /= len
@@ -755,8 +836,12 @@ func update(dt: float) -> void:
 			# Camera-relative (matches JS)
 			var wx: float = iz * sin_y + ix * cos_y
 			var wz: float = iz * cos_y - ix * sin_y
-			position.x += wx * planar_speed * air_control * dt
-			position.z += wz * planar_speed * air_control * dt
+			# Air-momentum damp: a normal (non-leap) jump shouldn't broad-jump across the
+			# map. Full speed on the ground; reduced horizontal carry while airborne.
+			# The deliberate slide→leap (handled above via _air_vel) keeps its full reach.
+			var air_damp: float = 1.0 if grounded else 0.55
+			position.x += wx * planar_speed * air_control * air_damp * dt
+			position.z += wz * planar_speed * air_control * air_damp * dt
 			var target_facing: float = atan2(wx, wz)
 			var d: float = target_facing - facing
 			while d > PI:  d -= PI * 2.0
@@ -786,13 +871,45 @@ func update(dt: float) -> void:
 	if position.y <= ground_y:
 		position.y = ground_y
 		vel_y      = 0.0
+		var was_airborne: bool = not grounded
 		grounded   = true
 
-	# Capture slide direction on slide entry (only when we first start sliding)
+		# Sprint L2: leap landing resolution.
+		if _leaping and was_airborne:
+			# ---- Vanguard-only landing impact (warrior archetype) ----
+			if save != null and save.class_id == "warrior":
+				const LEAP_IMPACT_DMG: float = 18.0
+				for enemy in enemies:
+					if enemy.dead:
+						continue
+					var dxz: float = Vector2(enemy.position.x - position.x, enemy.position.z - position.z).length()
+					if dxz <= 2.5:
+						enemy.hit(LEAP_IMPACT_DMG, self)
+			# ---- Camera thump feel (all archetypes) ----
+			var mass_scale: float = 1.0
+			if _lsm != null:
+				# _mass_mult is an internal LSM field; approximate from air_control: heavier = lower ac.
+				# Use a simple constant thump — mass scaling derived from air_control (inverted: heavy=low ac).
+				mass_scale = clampf(1.0 + (0.5 - air_control) * 0.6, 0.7, 1.4)
+			_cam_thump = 0.18 * mass_scale
+			# Clear leap state.
+			_air_vel = Vector3.ZERO
+			_leaping = false
+
+	# Capture slide direction on slide entry (only when we first start sliding).
+	# Also record entry direction for steer-cap reference; reset both on exit.
 	if sliding and _slide_dir == Vector3.ZERO:
-		_slide_dir = Vector3(sin(facing), 0.0, cos(facing))
+		_slide_dir       = Vector3(sin(facing), 0.0, cos(facing))
+		_slide_entry_dir = _slide_dir
 	elif not sliding:
-		_slide_dir = Vector3.ZERO
+		if _was_sliding:
+			# Slide just ended — auto-stand so the crouch toggle never leaves the player
+			# stuck in a crouch pose while sprinting. (Normal crouch-walk is unaffected:
+			# it never enters SLIDE, so _was_sliding stays false.)
+			crouching = false
+		_slide_dir       = Vector3.ZERO
+		_slide_entry_dir = Vector3.ZERO
+	_was_sliding = sliding
 
 	# ---- bounds ----
 	if scene.has_method("clamp_position"):
@@ -801,11 +918,14 @@ func update(dt: float) -> void:
 	# ---- rig + camera ----
 	rig.global_position = position
 	rig.rotation.y      = facing
-	rig.set_motion(move_speed_norm, crouching)
+	rig.set_motion(move_speed_norm, crouching, sliding)
 	# rig._process is called automatically by Godot each frame
 
 	_update_projectiles(dt)
 	stats.update(dt)
+	# Sprint L2: decrement camera thump timer each frame.
+	if _cam_thump > 0.0:
+		_cam_thump = maxf(0.0, _cam_thump - dt)
 	_sync_camera(minf(1.0, dt * 7.0))
 
 	# ---- FOV kick (lerp toward target) ----
@@ -830,7 +950,14 @@ func _sync_camera(blend: float) -> void:
 	_cam_dist_eff = lerp(_cam_dist_eff, dist_goal, blend)
 	_shoulder_eff = lerp(_shoulder_eff, shoulder_goal, blend)
 	var head_y: float = 1.5 * rig.scale.y
-	var target := position + Vector3(0.0, head_y, 0.0)
+	# Sprint L2: camera thump — transient downward dip on leap landing (subtle, self-canceling).
+	var thump_offset: float = 0.0
+	if _cam_thump > 0.0:
+		# Sine curve over timer: peaks at t=thump_max/2, returns to 0 at t=0.
+		# We advance the timer in the update loop; here we compute the current dip from remaining time.
+		# Use a simple ramp-down: full dip at start, zero at end. Max dip ~0.12 m.
+		thump_offset = -0.12 * (_cam_thump / 0.18)
+	var target := position + Vector3(0.0, head_y + thump_offset, 0.0)
 	var cp: float = cos(cam_pitch)
 	var sp: float = sin(cam_pitch)
 	# Camera-right vector perpendicular to yaw (horizontal plane).
