@@ -691,12 +691,9 @@ func update(dt: float) -> void:
 	var moving: bool = ix != 0.0 or iz != 0.0
 	var want_sprint: bool = _has_key(KEY_SHIFT)
 
-	# ---- stamina drain for sprint ----
-	# NOTE: sprint intent (Shift) must win even while the crouch toggle is on, otherwise
-	# a crouched player can never sprint → never slide. The FSM gives SPRINT priority over
-	# crouch when stamina_ok, so we must grant stamina here regardless of `crouching`.
+	# ---- stamina drain for sprint (only while upright; no sprint in crouch) ----
 	var stamina_ok_for_sprint: bool = false
-	if moving and want_sprint and grounded:
+	if moving and want_sprint and not crouching and grounded:
 		stamina_ok_for_sprint = stats.drain_stamina(8.0, dt)   # ~15s sprint on a 120 pool
 
 	# ---- detect edge inputs ----
@@ -776,34 +773,8 @@ func update(dt: float) -> void:
 	# ---- horizontal movement ----
 	if not lock_horiz:
 		if sliding:
-			# Slide: maintain locked direction, steer within cap for Light subclasses.
-			var max_deg: float = _lsm.get_slide_steer_max_deg()
-			if max_deg > 0.001 and (ix != 0.0 or iz != 0.0):
-				# Compute desired world direction from input (same formula as normal movement).
-				var len: float = sqrt(ix * ix + iz * iz)
-				var nix: float = ix / len
-				var niz: float = iz / len
-				var sin_y: float = sin(cam_yaw)
-				var cos_y: float = cos(cam_yaw)
-				var wx: float = niz * sin_y + nix * cos_y
-				var wz: float = niz * cos_y - nix * sin_y
-				var desired: Vector3 = Vector3(wx, 0.0, wz).normalized()
-				# Work in angles (atan2(x,z) matches Vector3(sin(a),0,cos(a)) convention).
-				var max_rad: float = deg_to_rad(max_deg)
-				var entry_a: float = atan2(_slide_entry_dir.x, _slide_entry_dir.z)
-				var cur_a:   float = atan2(_slide_dir.x, _slide_dir.z)
-				var des_a:   float = atan2(desired.x, desired.z)
-				# Clamp desired to within ±max_rad of entry angle.
-				var off: float = wrapf(des_a - entry_a, -PI, PI)
-				off = clampf(off, -max_rad, max_rad)
-				var target_a: float = entry_a + off
-				# Smooth rotate cur_a toward target_a at 120°/s.
-				var step: float = deg_to_rad(120.0) * dt
-				var da: float = wrapf(target_a - cur_a, -PI, PI)
-				cur_a += clampf(da, -step, step)
-				_slide_dir = Vector3(sin(cur_a), 0.0, cos(cur_a))
-				# Rig turns into the slide direction.
-				facing = cur_a
+			# Slide commits to the entry (sprint) direction — travels straight, no steering
+			# or curve, so it keeps the exact heading the player had under W+Shift.
 			position.x += _slide_dir.x * slide_speed * dt
 			position.z += _slide_dir.z * slide_speed * dt
 		elif _leaping and not grounded:
@@ -896,11 +867,21 @@ func update(dt: float) -> void:
 			_air_vel = Vector3.ZERO
 			_leaping = false
 
-	# Capture slide direction on slide entry (only when we first start sliding).
-	# Also record entry direction for steer-cap reference; reset both on exit.
+	# Capture slide direction on slide entry from the EXACT sprint heading (camera-relative
+	# input world-dir), not the lagging `facing`, so the slide travels the same direction
+	# and sense the player had under W+Shift. Snap facing to it too.
 	if sliding and _slide_dir == Vector3.ZERO:
-		_slide_dir       = Vector3(sin(facing), 0.0, cos(facing))
+		if ix != 0.0 or iz != 0.0:
+			var l: float = sqrt(ix * ix + iz * iz)
+			var sy: float = sin(cam_yaw)
+			var cy: float = cos(cam_yaw)
+			var wx: float = (iz / l) * sy + (ix / l) * cy
+			var wz: float = (iz / l) * cy - (ix / l) * sy
+			_slide_dir = Vector3(wx, 0.0, wz).normalized()
+		else:
+			_slide_dir = Vector3(sin(facing), 0.0, cos(facing))
 		_slide_entry_dir = _slide_dir
+		facing = atan2(_slide_dir.x, _slide_dir.z)
 	elif not sliding:
 		if _was_sliding:
 			# Slide just ended — auto-stand so the crouch toggle never leaves the player
