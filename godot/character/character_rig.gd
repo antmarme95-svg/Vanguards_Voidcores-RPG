@@ -1588,7 +1588,8 @@ func _process(delta: float) -> void:
 	# Crouch hips offset: pull the hips BACK 0.2m (local -Z) and DOWN 0.2m for a
 	# low, hinged stealth stance. Smoothed via _hip_crouch (0..1).
 	_hip_crouch = lerp(_hip_crouch, 1.0 if crouch else 0.0, min(1.0, delta * 10.0))
-	hips.position.y = 0.95 + hip_bob - 0.10 * _hip_crouch   # 0.95 base; bob additive; small crouch drop
+	# Bob fades out while crouched so the hips stay put during the crouch-walk.
+	hips.position.y = 0.95 + hip_bob * (1.0 - _hip_crouch) - 0.10 * _hip_crouch
 	hips.position.z = -0.12 * _hip_crouch                   # hips slightly back; joints do the rest
 
 	# ---- Subtle spine counter-rotation (torso twist opposing arms for life) ----
@@ -1653,14 +1654,16 @@ func _process(delta: float) -> void:
 	# Thighs flex forward at the hip; knees bend deeply; a gentle alternating stride
 	# keeps the crouch-walk readable. Overrides the standing gait leg pose.
 	if crouch and not _motion_slide and legs.size() >= 2 and arms.size() >= 2:
-		var stride: float = sin(_phase) * 0.14 * spd_clamped
-		# NEGATIVE leg.rotation.x = thigh forward/up (hip flexion) — same sign the slide
-		# lead-leg uses. Knee bends just enough to drop the shin to ~vertical so the
-		# FOOT stays planted (not tucked up behind, which read as "sitting").
-		legs[0].rotation.x = -1.0 + stride     # thigh up/forward
-		legs[1].rotation.x = -1.0 - stride
-		legs[0].get_meta("knee").rotation.x = 1.2    # knee bend → shin drops down
-		legs[1].get_meta("knee").rotation.x = 1.2
+		# Crouch-WALK: hips + trunk hold the low squat; the FEET step one in front of the
+		# other. NEGATIVE leg.rotation.x = thigh forward/up (hip flexion, same sign as the
+		# slide lead-leg). A clear alternating stride + per-leg knee lift = a low sneaky walk.
+		var step: float = sin(_phase) * 1.6 * spd_clamped     # alternating thigh swing
+		legs[0].rotation.x = -1.0 + step
+		legs[1].rotation.x = -1.0 - step
+		# Knee lifts on the leg that's swinging forward (clears the ground), base stays bent.
+		legs[0].get_meta("knee").rotation.x = 1.1 + max(0.0,  sin(_phase)) * 0.35 * spd_clamped
+		legs[1].get_meta("knee").rotation.x = 1.1 + max(0.0, -sin(_phase)) * 0.35 * spd_clamped
+		spine.rotation.y = 0.0                 # keep the trunk steady (no twist) while crouched
 		arms[0].rotation.x = -0.2              # arms forward for balance
 		arms[1].rotation.x = -0.2
 		arms[0].get_meta("elbow").rotation.x = -0.7
